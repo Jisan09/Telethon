@@ -142,13 +142,11 @@ def _raise_cast_fail(entity, target):
 def get_input_peer(entity, allow_self=True, check_hash=True):
     """
     Gets the input peer for the given "entity" (user, chat or channel).
-
     A ``TypeError`` is raised if the given entity isn't a supported type
     or if ``check_hash is True`` but the entity's ``access_hash is None``
     *or* the entity contains ``min`` information. In this case, the hash
     cannot be used for general purposes, and thus is not returned to avoid
     any issues which can derive from invalid access hashes.
-
     Note that ``check_hash`` **is ignored** if an input peer is already
     passed since in that case we assume the user knows what they're doing.
     This is key to getting entities by explicitly passing ``hash = 0``.
@@ -238,9 +236,7 @@ def get_input_peer(entity, allow_self=True, check_hash=True):
 def get_input_channel(entity):
     """
     Similar to :meth:`get_input_peer`, but for :tl:`InputChannel`'s alone.
-
     .. important::
-
         This method does not validate for invalid general-purpose access
         hashes, unlike `get_input_peer`. Consider using instead:
         ``get_input_channel(get_input_peer(channel))``.
@@ -266,9 +262,7 @@ def get_input_channel(entity):
 def get_input_user(entity):
     """
     Similar to :meth:`get_input_peer`, but for :tl:`InputUser`'s alone.
-
     .. important::
-
         This method does not validate for invalid general-purpose access
         hashes, unlike `get_input_peer`. Consider using instead:
         ``get_input_channel(get_input_peer(channel))``.
@@ -433,7 +427,6 @@ def get_input_media(
 ):
     """
     Similar to :meth:`get_input_peer`, but for media.
-
     If the media is :tl:`InputFile` and ``is_photo`` is known to be `True`,
     it will be treated as an :tl:`InputMediaUploadedPhoto`. Else, the rest
     of parameters will indicate how to treat it.
@@ -518,7 +511,8 @@ def get_input_media(
     if isinstance(media, (
             types.MessageMediaEmpty, types.MessageMediaUnsupported,
             types.ChatPhotoEmpty, types.UserProfilePhotoEmpty,
-            types.ChatPhoto, types.UserProfilePhoto)):
+            types.ChatPhoto, types.UserProfilePhoto,
+            types.FileLocationToBeDeprecated)):
         return types.InputMediaEmpty()
 
     if isinstance(media, types.Message):
@@ -784,7 +778,6 @@ def sanitize_parse_mode(mode):
 def get_input_location(location):
     """
     Similar to :meth:`get_input_peer`, but for input messages.
-
     Note that this returns a tuple ``(dc_id, location)``, the
     ``dc_id`` being present if known.
     """
@@ -821,6 +814,9 @@ def _get_file_info(location):
             file_reference=location.file_reference,
             thumb_size=location.sizes[-1].type
         ), _photo_size_byte_count(location.sizes[-1]))
+
+    if isinstance(location, types.FileLocationToBeDeprecated):
+        raise TypeError('Unavailable location cannot be used as input')
 
     _raise_cast_fail(location, 'InputFileLocation')
 
@@ -897,7 +893,6 @@ def is_video(file):
 def is_list_like(obj):
     """
     Returns `True` if the given object looks like a list.
-
     Checking ``if hasattr(obj, '__iter__')`` and ignoring ``str/bytes`` is not
     enough. Things like ``open()`` are also iterable (and probably many
     other things), so just support the commonly known list-like objects.
@@ -921,7 +916,6 @@ def parse_username(username):
     a string, username or URL. Returns a tuple consisting of
     both the stripped, lowercase username and whether it is
     a joinchat/ hash (in which case is not lowercase'd).
-
     Returns ``(None, False)`` if the ``username`` or link is not valid.
     """
     username = username.strip()
@@ -944,7 +938,6 @@ def get_inner_text(text, entities):
     """
     Gets the inner text that's surrounded by the given entities.
     For instance: text = 'hey!', entity = MessageEntityBold(2, 2) -> 'y!'.
-
     :param text:     the original text.
     :param entities: the entity or entities that must be matched.
     :return: a single result or a list of the text surrounded by the entities.
@@ -996,15 +989,12 @@ def get_peer(peer):
 def get_peer_id(peer, add_mark=True):
     """
     Convert the given peer into its marked ID by default.
-
     This "mark" comes from the "bot api" format, and with it the peer type
     can be identified back. User ID is left unmodified, chat ID is negated,
     and channel ID is "prefixed" with -100:
-
     * ``user_id``
     * ``-chat_id``
     * ``-100channel_id``
-
     The original ID and the peer type class can be returned with
     a call to :meth:`resolve_id(marked_id)`.
     """
@@ -1093,10 +1083,8 @@ def _decode_telegram_base64(string):
     """
     Decodes a url-safe base64-encoded string into its bytes
     by first adding the stripped necessary padding characters.
-
     This is the way Telegram shares binary data as strings,
     such as Bot API-style file IDs or invite links.
-
     Returns `None` if the input string was not valid.
     """
     try:
@@ -1120,10 +1108,8 @@ def resolve_bot_file_id(file_id):
     Given a Bot API-style `file_id <telethon.tl.custom.file.File.id>`,
     returns the media it represents. If the `file_id <telethon.tl.custom.file.File.id>`
     is not valid, `None` is returned instead.
-
     Note that the `file_id <telethon.tl.custom.file.File.id>` does not have information
     such as image dimensions or file size, so these will be zero if present.
-
     For thumbnails, the photo ID and hash will always be zero.
     """
     data = _rle_decode(_decode_telegram_base64(file_id))
@@ -1213,6 +1199,10 @@ def resolve_bot_file_id(file_id):
             date=None,
             sizes=[types.PhotoSize(
                 type=photo_size,
+                location=types.FileLocationToBeDeprecated(
+                    volume_id=volume_id,
+                    local_id=local_id
+                ),
                 w=0,
                 h=0,
                 size=0
@@ -1225,10 +1215,8 @@ def resolve_bot_file_id(file_id):
 def pack_bot_file_id(file):
     """
     Inverse operation for `resolve_bot_file_id`.
-
     The only parameters this method will accept are :tl:`Document` and
     :tl:`Photo`, and it will return a variable-length ``file_id`` string.
-
     If an invalid parameter is given, it will ``return None``.
     """
     if isinstance(file, types.MessageMediaDocument):
@@ -1274,11 +1262,9 @@ def resolve_invite_link(link):
     """
     Resolves the given invite link. Returns a tuple of
     ``(link creator user id, global chat id, random int)``.
-
     Note that for broadcast channels or with the newest link format, the link
     creator user ID will be zero to protect their identity. Normal chats and
     megagroup channels will have such ID.
-
     Note that the chat ID may not be accurate for chats with a link that were
     upgraded to megagroup, since the link can remain the same, but the chat
     ID will be correct once a new link is generated.
@@ -1311,12 +1297,10 @@ def resolve_inline_message_id(inline_msg_id):
     """
     Resolves an inline message ID. Returns a tuple of
     ``(message id, peer, dc id, access hash)``
-
     The ``peer`` may either be a :tl:`PeerUser` referencing
     the user who sent the message via the bot in a private
     conversation or small group chat, or a :tl:`PeerChannel`
     if the message was sent in a channel.
-
     The ``access_hash`` does not have any use yet.
     """
     try:
@@ -1348,20 +1332,16 @@ def encode_waveform(waveform):
     Encodes the input `bytes` into a 5-bit byte-string
     to be used as a voice note's waveform. See `decode_waveform`
     for the reverse operation.
-
     Example
         .. code-block:: python
-
             chat = ...
             file = 'my.ogg'
-
             # Send 'my.ogg' with a ascending-triangle waveform
             await client.send_file(chat, file, attributes=[types.DocumentAttributeAudio(
                 duration=7,
                 voice=True,
                 waveform=utils.encode_waveform(bytes(range(2 ** 5))  # 2**5 because 5-bit
             )]
-
             # Send 'my.ogg' with a square waveform
             await client.send_file(chat, file, attributes=[types.DocumentAttributeAudio(
                 duration=7,
@@ -1414,43 +1394,32 @@ def split_text(text, entities, *, limit=4096, max_entities=100, split_at=(r'\n',
     Split a message text and entities into multiple messages, each with their
     own set of entities. This allows sending a very large message as multiple
     messages while respecting the formatting.
-
     Arguments
         text (`str`):
             The message text.
-
         entities (List[:tl:`MessageEntity`])
             The formatting entities.
-
         limit (`int`):
             The maximum message length of each individual message.
-
         max_entities (`int`):
             The maximum amount of entities that will be present in each
             individual message.
-
         split_at (Tuplel[`str`]):
             The list of regular expressions that will determine where to split
             the text. By default, a newline is searched. If no newline is
             present, a space is searched. If no space is found, the split will
             be made at any character.
-
             The last expression should always match a character, or else the
             text will stop being splitted and the resulting text may be larger
             than the limit.
-
     Yields
         Pairs of ``(str, entities)`` with the split message.
-
     Example
         .. code-block:: python
-
             from telethon import utils
             from telethon.extensions import markdown
-
             very_long_markdown_text = "..."
             text, entities = markdown.parse(very_long_markdown_text)
-
             for text, entities in utils.split_text(text, entities):
                 await client.send_message(chat, text, formatting_entities=entities)
     """
@@ -1523,7 +1492,6 @@ class AsyncClassWrapper:
 def stripped_photo_to_jpg(stripped):
     """
     Adds the JPG header and footer to a stripped image.
-
     Ported from https://github.com/telegramdesktop/tdesktop/blob/bec39d89e19670eb436dc794a8f20b657cb87c71/Telegram/SourceFiles/ui/image/image.cpp#L225
     """
     # NOTE: Changes here should update _photo_size_byte_count

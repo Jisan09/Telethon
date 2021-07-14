@@ -1092,6 +1092,8 @@ emojiURL#a575739d url:string = EmojiURL;
 
 emojiLanguage#b3fb5361 lang_code:string = EmojiLanguage;
 
+fileLocationToBeDeprecated#bc7fc6cd volume_id:long local_id:int = FileLocation;
+
 folder#ff544e65 flags:# autofill_new_broadcasts:flags.0?true autofill_public_groups:flags.1?true autofill_new_correspondents:flags.2?true id:int title:string photo:flags.3?ChatPhoto = Folder;
 
 inputFolderPeer#fbd2c296 peer:InputPeer folder_id:int = InputFolderPeer;
