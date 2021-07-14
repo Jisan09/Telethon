@@ -195,10 +195,10 @@ photoEmpty#2331b22d id:long = Photo;
 photo#fb197a65 flags:# has_stickers:flags.0?true id:long access_hash:long file_reference:bytes date:int sizes:Vector<PhotoSize> video_sizes:flags.1?Vector<VideoSize> dc_id:int = Photo;
 
 photoSizeEmpty#e17e23c type:string = PhotoSize;
-photoSize#75c78e60 type:string location:FileLocation w:int h:int size:int = PhotoSize;
-photoCachedSize#21e1ad6 type:string location:FileLocation w:int h:int bytes:bytes = PhotoSize;
+photoSize#77bfb61b type:string location:FileLocation w:int h:int size:int = PhotoSize;
+photoCachedSize#e9a734fa type:string location:FileLocation w:int h:int bytes:bytes = PhotoSize;
 photoStrippedSize#e0b0bc2e type:string bytes:bytes = PhotoSize;
-photoSizeProgressive#fa3efb95 type:string location:FileLocation w:int h:int sizes:Vector<int> = PhotoSize;
+photoSizeProgressive#5aa86a51 type:string location:FileLocation w:int h:int sizes:Vector<int> = PhotoSize;
 photoPathSize#d8214d41 type:string bytes:bytes = PhotoSize;
 
 geoPointEmpty#1117dd5f = GeoPoint;
