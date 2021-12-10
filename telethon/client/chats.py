@@ -98,6 +98,7 @@ class _ChatAction:
 
 class _ParticipantsIter(RequestIter):
     async def _init(self, entity, filter, search, aggressive):
+        # sourcery no-metrics
         if isinstance(filter, type):
             if filter in (types.ChannelParticipantsBanned,
                           types.ChannelParticipantsKicked,
