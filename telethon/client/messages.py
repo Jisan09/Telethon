@@ -1418,7 +1418,7 @@ class MessageMethods:
     ):
         message = utils.get_message_id(message) or 0
         if not reaction:
-            get_default_request = functions.help.GetAppConfig()
+            get_default_request = functions.help.GetAppConfigRequest()
             app_config = await self(get_default_request)
             reaction = (
                 next(
@@ -1428,7 +1428,7 @@ class MessageMethods:
                     )
                 )
             ).value.value
-        request = functions.messages.SendReaction(
+        request = functions.messages.SendReactionRequest(
             big=big,
             peer=entity,
             msg_id=message,
@@ -1445,7 +1445,7 @@ class MessageMethods:
         self: 'TelegramClient',
         reaction: str
     ):
-        request = functions.messages.SetDefaultReaction(
+        request = functions.messages.SetDefaultReactionRequest(
             reaction=reaction
         )
         return await self(request)
