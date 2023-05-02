@@ -1,5 +1,7 @@
 import abc
 
+from ... import utils
+
 
 class SenderGetter(abc.ABC):
     """
@@ -46,11 +48,14 @@ class SenderGetter(abc.ABC):
         # cached information, they may use the property instead.
         if (self._sender is None or getattr(self._sender, 'min', None)) \
                 and await self.get_input_sender():
-            try:
-                self._sender =\
-                    await self._client.get_entity(self._input_sender)
-            except ValueError:
-                await self._refetch_sender()
+            # self.get_input_sender may refresh in which case the sender may no longer be min
+            # However it could still incur a cost so the cheap check is done twice instead.
+            if self._sender is None or getattr(self._sender, 'min', None):
+                try:
+                    self._sender =\
+                        await self._client.get_entity(self._input_sender)
+                except ValueError:
+                    await self._refetch_sender()
         return self._sender
 
     @property
@@ -66,9 +71,9 @@ class SenderGetter(abc.ABC):
         """
         if self._input_sender is None and self._sender_id and self._client:
             try:
-                self._input_sender = \
-                    self._client._entity_cache[self._sender_id]
-            except KeyError:
+                self._input_sender = self._client._mb_entity_cache.get(
+                        utils.resolve_id(self._sender_id)[0])._as_input_peer()
+            except AttributeError:
                 pass
         return self._input_sender
 

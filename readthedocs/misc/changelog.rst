@@ -13,6 +13,176 @@ it can take advantage of new goodies!
 
 .. contents:: List of All Versions
 
+New Layer and housekeeping (v1.28)
+==================================
+
++------------------------+
+| Scheme layer used: 155 |
++------------------------+
+
+Plenty of stale issues closed, as well as improvements for some others.
+
+Additions
+~~~~~~~~~
+
+* New ``entity_cache_limit`` parameter in the ``TelegramClient`` constructor.
+  This should help a bit in keeping memory usage in check.
+
+Enhancements
+~~~~~~~~~~~~
+
+* ``progress_callback`` is now called when dealing with albums. See the
+  documentation on `client.send_file() <telethon.client.uploads.UploadMethods.send_file>`
+  for details.
+* Update state and entities are now periodically saved, so that the information
+  isn't lost in the case of crash or unexpected script terminations. You should
+  still be calling ``disconnect`` or using the context-manager, though.
+* The client should no longer unnecessarily call ``get_me`` every time it's started.
+
+Bug fixes
+~~~~~~~~~
+
+* Messages obtained via raw API could not be used in ``forward_messages``.
+* ``force_sms`` and ``sign_up`` have been deprecated. See `issue 4050`_ for details.
+  It is no longer possible for third-party applications, such as those made with
+  Telethon, to use those features.
+* ``events.ChatAction`` should now work in more cases in groups with hidden members.
+* Errors that occur at the connection level should now be properly propagated, so that
+  you can actually have a chance to handle them.
+* Update handling should be more resilient.
+* ``PhoneCodeExpiredError`` will correctly clear the stored hash if it occurs in ``sign_in``.
+* In patch ``v1.28.2``, :tl:`InputBotInlineMessageID64` can now be used
+  to edit inline messages.
+
+
+.. _issue 4050: https://github.com/LonamiWebs/Telethon/issues/4050
+
+
+New Layer and some Bug fixes (v1.27)
+====================================
+
++------------------------+
+| Scheme layer used: 152 |
++------------------------+
+
+Bug fixes
+~~~~~~~~~
+
+* When the account is logged-out, the library should now correctly propagate
+  an error through ``run_until_disconnected`` to let you handle it.
+* The library no longer uses ``asyncio.get_event_loop()`` in newer Python
+  versions, which should get rid of some deprecation warnings.
+* It could happen that bots would receive messages sent by themselves,
+  very often right after they deleted a message. This should happen far
+  less often now (but might still happen with unlucky timings).
+* Maximum photo size for automatic image resizing is now larger.
+* The initial request is now correctly wrapped in ``invokeWithoutUpdates``
+  when updates are disabled after constructing the client instance.
+* Using a ``pathlib.Path`` to download contacts and web documents should
+  now work correctly.
+
+New Layer and some Bug fixes (v1.26)
+====================================
+
++------------------------+
+| Scheme layer used: 149 |
++------------------------+
+
+This new layer includes things such as emoji status, more admin log events,
+forum topics and message reactions, among other things. You can access these
+using raw API. It also contains a few bug fixes.
+
+These were fixed in the v1.25 series:
+
+* ``client.edit_admin`` did not work on small group chats.
+* ``client.get_messages`` could stop early in some channels.
+* ``client.download_profile_photo`` now should work even if ``User.min``.
+* ``client.disconnect`` should no longer hang when being called from within
+  an event handlers.
+* ``client.get_dialogs`` now initializes the update state for channels.
+* The message sender should not need to be fetched in more cases.
+* Lowered the severity of some log messages to be less spammy.
+
+These are new to v1.26.0:
+
+* Layer update.
+* New documented RPC errors.
+* Sometimes the first message update to a channel could be missed if said
+  message was read immediately.
+* ``client.get_dialogs`` would fail when the total count evenly divided
+  the chunk size of 100.
+* ``client.get_messages`` could get stuck during a global search.
+* Potentially fixed some issues when sending certain videos.
+* Update handling should be more resilient.
+* The client should handle having its auth key destroyed more gracefully.
+* Fixed some issues when logging certain messages.
+
+
+Bug fixes (v1.25.1)
+===================
+
+This version should fix some of the problems that came with the revamped
+update handling.
+
+* Some inline URLs were not parsing correctly with markdown.
+* ``events.Raw`` was handling :tl:`UpdateShort` which it shouldn't do.
+* ``events.Album`` should now work again.
+* ``CancelledError`` was being incorrectly logged as a fatal error.
+* Some fixes to update handling primarly aimed for bot accounts.
+* Update handling now can deal with more errors without crashing.
+* Unhandled errors from update handling will now be propagated through
+  ``client.run_until_disconnected``.
+* Invite links with ``+`` are now recognized.
+* Added new known RPC errors.
+* ``telethon.types`` could not be used as a module.
+* 0-length message entities are now stripped to avoid errors.
+* ``client.send_message`` was not returning a message with ``reply_to``
+  in some cases.
+* ``aggressive`` in ``client.iter_participants`` now does nothing (it did
+  not really work anymore anyway, and this should prevent other errors).
+* ``client.iter_participants`` was failing in some groups.
+* Text with HTML URLs could sometimes fail to parse.
+* Added a hard timeout during disconnect in order to prevent the program
+  from freezing.
+
+Please be sure to report issues with update handling if you still encounter
+some errors!
+
+
+Update handling overhaul (v1.25)
+================================
+
++------------------------+
+| Scheme layer used: 144 |
++------------------------+
+
+I had plans to release v2 way earlier, but my motivation drained off, so that
+didn't happen. The reason for another v1 release is that there was a clear
+need to fix some things regarding update handling (which were present in v2).
+I did not want to make this release. But with the release date for v2 still
+being unclear, I find it necessary to release another v1 version. I apologize
+for the delay (I should've done this a lot sooner but didn't because in my
+head I would've pushed through and finished v2, but I underestimated how much
+work that was and I probably experienced burn-out).
+
+I still don't intend to make new additions to the v1 series (beyond updating
+the Telegram layer being used). I still have plans to finish v2 some day.
+But in the meantime, new features, such as reactions, will have to be used
+through raw API.
+
+This update also backports the update overhaul from v2. If you experience
+issues with updates, please report them on the GitHub page for the project.
+However, this new update handling should be more reliable, and ``catch_up``
+should actually work properly.
+
+Breaking Changes
+~~~~~~~~~~~~~~~~
+
+* In order for ``catch_up`` to work (new flag in the ``TelegramClient``
+  constructor), sessions need to impleemnt the new ``get_update_states``.
+  Third-party session storages won't have this implemented by the time
+  this version released, so ``catch_up`` may not work with those.
+
 Rushed release to fix login (v1.24)
 ===================================
 
@@ -1990,7 +2160,7 @@ the scenes! This means you're now able to do both of the following:
     async def main():
       await client.send_message('me', 'Hello!')
 
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
 
     # ...can be rewritten as:
 

@@ -54,7 +54,7 @@ mimetypes.add_type('audio/flac', '.flac')
 mimetypes.add_type('application/x-tgsticker', '.tgs')
 
 USERNAME_RE = re.compile(
-    r'@|(?:https?://)?(?:www\.)?(?:telegram\.(?:me|dog)|t\.me)/(@|joinchat/)?'
+    r'@|(?:https?://)?(?:www\.)?(?:telegram\.(?:me|dog)|t\.me)/(@|\+|joinchat/)?'
 )
 TG_JOIN_RE = re.compile(
     r'tg://(join)\?invite='
@@ -583,11 +583,14 @@ def _get_entity_pair(entity_id, entities, cache,
     """
     Returns ``(entity, input_entity)`` for the given entity ID.
     """
+    if not entity_id:
+        return None, None
+
     entity = entities.get(entity_id)
     try:
-        input_entity = cache[entity_id]
-    except KeyError:
-        # KeyError is unlikely, so another TypeError won't hurt
+        input_entity = cache.get(resolve_id(entity_id)[0])._as_input_peer()
+    except AttributeError:
+        # AttributeError is unlikely, so another TypeError won't hurt
         try:
             input_entity = get_input_peer(entity)
         except TypeError:
@@ -1341,11 +1344,7 @@ def get_appropriated_part_size(file_size):
         return 128
     if file_size <= 786432000:  # 750MB
         return 256
-    if file_size <= 2097152000:  # 2000MB
-        return 512
-    if file_size <= 4194304000:  # 4000MB
-        return 1024
-    raise ValueError('File size too large')
+    return 512
 
 
 def encode_waveform(waveform):

@@ -2,7 +2,7 @@ import datetime
 import os
 import time
 
-from telethon.tl import types
+from ..tl import types
 from .memory import MemorySession, _SentFileType
 from .. import utils
 from ..crypto import AuthKey
@@ -214,6 +214,20 @@ class SQLiteSession(MemorySession):
         self._execute('insert or replace into update_state values (?,?,?,?,?)',
                       entity_id, state.pts, state.qts,
                       state.date.timestamp(), state.seq)
+
+    def get_update_states(self):
+        c = self._cursor()
+        try:
+            rows = c.execute('select id, pts, qts, date, seq from update_state').fetchall()
+            return ((row[0], types.updates.State(
+                pts=row[1],
+                qts=row[2],
+                date=datetime.datetime.fromtimestamp(row[3], tz=datetime.timezone.utc),
+                seq=row[4],
+                unread_count=0)
+            ) for row in rows)
+        finally:
+            c.close()
 
     def save(self):
         """Saves the current session object as session_user_id.session"""

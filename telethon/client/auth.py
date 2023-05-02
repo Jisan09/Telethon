@@ -7,6 +7,7 @@ import warnings
 
 from .. import utils, helpers, errors, password as pwd_mod
 from ..tl import types, functions, custom
+from .._updates import SessionState
 
 if typing.TYPE_CHECKING:
     from .telegramclient import TelegramClient
@@ -32,12 +33,6 @@ class AuthMethods:
 
         By default, this method will be interactive (asking for
         user input if needed), and will handle 2FA if enabled too.
-
-        If the phone doesn't belong to an existing account (and will hence
-        `sign_up` for a new one),  **you are agreeing to Telegram's
-        Terms of Service. This is required and your account
-        will be banned otherwise.** See https://telegram.org/tos
-        and https://core.telegram.org/api/terms.
 
         If the event loop is already running, this method returns a
         coroutine that you should await on your own code; otherwise
@@ -187,7 +182,6 @@ class AuthMethods:
         two_step_detected = False
 
         await self.send_code_request(phone, force_sms=force_sms)
-        sign_up = False  # assume login
         while attempts < max_attempts:
             try:
                 value = code_callback()
@@ -200,19 +194,12 @@ class AuthMethods:
                 if not value:
                     raise errors.PhoneCodeEmptyError(request=None)
 
-                if sign_up:
-                    me = await self.sign_up(value, first_name, last_name)
-                else:
-                    # Raises SessionPasswordNeededError if 2FA enabled
-                    me = await self.sign_in(phone, code=value)
+                # Raises SessionPasswordNeededError if 2FA enabled
+                me = await self.sign_in(phone, code=value)
                 break
             except errors.SessionPasswordNeededError:
                 two_step_detected = True
                 break
-            except errors.PhoneNumberOccupiedError:
-                sign_up = False
-            except errors.PhoneNumberUnoccupiedError:
-                sign_up = True
             except (errors.PhoneCodeEmptyError,
                     errors.PhoneCodeExpiredError,
                     errors.PhoneCodeHashEmptyError,
@@ -365,13 +352,18 @@ class AuthMethods:
                 'and a password only if an RPCError was raised before.'
             )
 
-        result = await self(request)
+        try:
+            result = await self(request)
+        except errors.PhoneCodeExpiredError:
+            self._phone_code_hash.pop(phone, None)
+            raise
+
         if isinstance(result, types.auth.AuthorizationSignUpRequired):
             # Emulate pre-layer 104 behaviour
             self._tos = result.terms_of_service
             raise errors.PhoneNumberUnoccupiedError(request=request)
 
-        return self._on_login(result.user)
+        return await self._on_login(result.user)
 
     async def sign_up(
             self: 'TelegramClient',
@@ -382,101 +374,22 @@ class AuthMethods:
             phone: str = None,
             phone_code_hash: str = None) -> 'types.User':
         """
-        Signs up to Telegram as a new user account.
-
-        Use this if you don't have an account yet.
-
-        You must call `send_code_request` first.
-
-        **By using this method you're agreeing to Telegram's
-        Terms of Service. This is required and your account
-        will be banned otherwise.** See https://telegram.org/tos
-        and https://core.telegram.org/api/terms.
-
-        Arguments
-            code (`str` | `int`):
-                The code sent by Telegram
-
-            first_name (`str`):
-                The first name to be used by the new account.
-
-            last_name (`str`, optional)
-                Optional last name.
-
-            phone (`str` | `int`, optional):
-                The phone to sign up. This will be the last phone used by
-                default (you normally don't need to set this).
-
-            phone_code_hash (`str`, optional):
-                The hash returned by `send_code_request`. This can be left as
-                `None` to use the last hash known for the phone to be used.
-
-        Returns
-            The new created :tl:`User`.
-
-        Example
-            .. code-block:: python
-
-                phone = '+34 123 123 123'
-                await client.send_code_request(phone)
-
-                code = input('enter code: ')
-                await client.sign_up(code, first_name='Anna', last_name='Banana')
+        This method can no longer be used, and will immediately raise a ``ValueError``.
+        See `issue #4050 <https://github.com/LonamiWebs/Telethon/issues/4050>`_ for context.
         """
-        me = await self.get_me()
-        if me:
-            return me
+        raise ValueError('Third-party applications cannot sign up for Telegram. See https://github.com/LonamiWebs/Telethon/issues/4050 for details')
 
-        # To prevent abuse, one has to try to sign in before signing up. This
-        # is the current way in which Telegram validates the code to sign up.
-        #
-        # `sign_in` will set `_tos`, so if it's set we don't need to call it
-        # because the user already tried to sign in.
-        #
-        # We're emulating pre-layer 104 behaviour so except the right error:
-        if not self._tos:
-            try:
-                return await self.sign_in(
-                    phone=phone,
-                    code=code,
-                    phone_code_hash=phone_code_hash,
-                )
-            except errors.PhoneNumberUnoccupiedError:
-                pass  # code is correct and was used, now need to sign in
-
-        if self._tos and self._tos.text:
-            if self.parse_mode:
-                t = self.parse_mode.unparse(self._tos.text, self._tos.entities)
-            else:
-                t = self._tos.text
-            sys.stderr.write("{}\n".format(t))
-            sys.stderr.flush()
-
-        phone, phone_code_hash = \
-            self._parse_phone_and_hash(phone, phone_code_hash)
-
-        result = await self(functions.auth.SignUpRequest(
-            phone_number=phone,
-            phone_code_hash=phone_code_hash,
-            first_name=first_name,
-            last_name=last_name
-        ))
-
-        if self._tos:
-            await self(
-                functions.help.AcceptTermsOfServiceRequest(self._tos.id))
-
-        return self._on_login(result.user)
-
-    def _on_login(self, user):
+    async def _on_login(self, user):
         """
         Callback called whenever the login or sign up process completes.
 
         Returns the input user parameter.
         """
-        self._bot = bool(user.bot)
-        self._self_input_peer = utils.get_input_peer(user, allow_self=False)
+        self._mb_entity_cache.set_self_user(user.id, user.bot, user.access_hash)
         self._authorized = True
+
+        state = await self(functions.updates.GetStateRequest())
+        self._message_box.load(SessionState(0, 0, 0, state.pts, state.qts, int(state.date.timestamp()), state.seq, 0), [])
 
         return user
 
@@ -484,7 +397,8 @@ class AuthMethods:
             self: 'TelegramClient',
             phone: str,
             *,
-            force_sms: bool = False) -> 'types.auth.SentCode':
+            force_sms: bool = False,
+            _retry_count: int = 0) -> 'types.auth.SentCode':
         """
         Sends the Telegram code needed to login to the given phone number.
 
@@ -493,7 +407,8 @@ class AuthMethods:
                 The phone to which the code will be sent.
 
             force_sms (`bool`, optional):
-                Whether to force sending as SMS.
+                Whether to force sending as SMS. This has been deprecated.
+                See `issue #4050 <https://github.com/LonamiWebs/Telethon/issues/4050>`_ for context.
 
         Returns
             An instance of :tl:`SentCode`.
@@ -505,6 +420,10 @@ class AuthMethods:
                 sent = await client.send_code_request(phone)
                 print(sent)
         """
+        if force_sms:
+            warnings.warn('force_sms has been deprecated and no longer works')
+            force_sms = False
+
         result = None
         phone = utils.parse_phone(phone) or self._phone
         phone_hash = self._phone_code_hash.get(phone)
@@ -514,7 +433,14 @@ class AuthMethods:
                 result = await self(functions.auth.SendCodeRequest(
                     phone, self.api_id, self.api_hash, types.CodeSettings()))
             except errors.AuthRestartError:
-                return await self.send_code_request(phone, force_sms=force_sms)
+                if _retry_count > 2:
+                    raise
+                return await self.send_code_request(
+                    phone, force_sms=force_sms, _retry_count=_retry_count+1)
+
+            # TODO figure out when/if/how this can happen
+            if isinstance(result, types.auth.SentCodeSuccess):
+                raise RuntimeError('logged in right after sending the code')
 
             # If we already sent a SMS, do not resend the code (hash may be empty)
             if isinstance(result.type, types.auth.SentCodeTypeSms):
@@ -529,8 +455,21 @@ class AuthMethods:
         self._phone = phone
 
         if force_sms:
-            result = await self(
-                functions.auth.ResendCodeRequest(phone, phone_hash))
+            try:
+                result = await self(
+                    functions.auth.ResendCodeRequest(phone, phone_hash))
+            except errors.PhoneCodeExpiredError:
+                if _retry_count > 2:
+                    raise
+                self._phone_code_hash.pop(phone, None)
+                self._log[__name__].info(
+                    "Phone code expired in ResendCodeRequest, requesting a new code"
+                )
+                return await self.send_code_request(
+                    phone, force_sms=False, _retry_count=_retry_count+1)
+
+            if isinstance(result, types.auth.SentCodeSuccess):
+                raise RuntimeError('logged in right after resending the code')
 
             self._phone_code_hash[phone] = result.phone_code_hash
 
@@ -568,6 +507,9 @@ class AuthMethods:
 
                 # Important! You need to wait for the login to complete!
                 await qr_login.wait()
+
+                # If you have 2FA enabled, `wait` will raise `telethon.errors.SessionPasswordNeededError`.
+                # You should except that error and call `sign_in` with the password if this happens.
         """
         qr_login = custom.QRLogin(self, ignored_ids or [])
         await qr_login.recreate()
@@ -576,6 +518,8 @@ class AuthMethods:
     async def log_out(self: 'TelegramClient') -> bool:
         """
         Logs out Telegram and deletes the current ``*.session`` file.
+
+        The client is unusable after logging out and a new instance should be created.
 
         Returns
             `True` if the operation was successful.
@@ -591,13 +535,12 @@ class AuthMethods:
         except errors.RPCError:
             return False
 
-        self._bot = None
-        self._self_input_peer = None
+        self._mb_entity_cache.set_self_user(None, None, None)
         self._authorized = False
-        self._state_cache.reset()
 
         await self.disconnect()
         self.session.delete()
+        self.session = None
         return True
 
     async def edit_2fa(

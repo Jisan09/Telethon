@@ -14,7 +14,7 @@ from ..tl.custom.sendergetter import SenderGetter
 #      in a single place will make it annoying to use (since
 #      the user needs to check for the existence of `None`).
 #
-# TODO Handle UpdateUserBlocked, UpdateUserName, UpdateUserPhone, UpdateUserPhoto
+# TODO Handle UpdateUserBlocked, UpdateUserName, UpdateUserPhone, UpdateUser
 
 def _requires_action(function):
     @functools.wraps(function)
@@ -95,7 +95,7 @@ class UserUpdate(EventBuilder):
         def _set_client(self, client):
             super()._set_client(client)
             self._sender, self._input_sender = utils._get_entity_pair(
-                self.sender_id, self._entities, client._entity_cache)
+                self.sender_id, self._entities, client._mb_entity_cache)
 
         @property
         def user(self):
@@ -246,7 +246,7 @@ class UserUpdate(EventBuilder):
             return isinstance(self.action, types.SendMessageUploadPhotoAction)
 
         @property
-        @_requires_action
+        @_requires_status
         def last_seen(self):
             """
             Exact `datetime.datetime` when the user was last seen if known.

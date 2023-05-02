@@ -10,18 +10,20 @@ from .mtprotostate import MTProtoState
 from ..tl.tlobject import TLRequest
 from .. import helpers, utils
 from ..errors import (
-    BadMessageError, InvalidBufferError, SecurityError,
+    BadMessageError, InvalidBufferError, AuthKeyNotFound, SecurityError,
     TypeNotFoundError, rpc_message_to_error
 )
 from ..extensions import BinaryReader
 from ..tl.core import RpcResult, MessageContainer, GzipPacked
 from ..tl.functions.auth import LogOutRequest
-from ..tl.functions import PingRequest, DestroySessionRequest
+from ..tl.functions import PingRequest, DestroySessionRequest, DestroyAuthKeyRequest
 from ..tl.types import (
     MsgsAck, Pong, BadServerSalt, BadMsgNotification, FutureSalts,
     MsgNewDetailedInfo, NewSessionCreated, MsgDetailedInfo, MsgsStateReq,
     MsgsStateInfo, MsgsAllInfo, MsgResendReq, upload, DestroySessionOk, DestroySessionNone,
+    DestroyAuthKeyOk, DestroyAuthKeyNone, DestroyAuthKeyFail
 )
+from ..tl import types as _tl
 from ..crypto import AuthKey
 from ..helpers import retry_range
 
@@ -44,7 +46,7 @@ class MTProtoSender:
     def __init__(self, auth_key, *, loggers,
                  retries=5, delay=1, auto_reconnect=True, connect_timeout=None,
                  auth_key_callback=None,
-                 update_callback=None, auto_reconnect_callback=None):
+                 updates_queue=None, auto_reconnect_callback=None):
         self._connection = None
         self._loggers = loggers
         self._log = loggers[__name__]
@@ -53,7 +55,7 @@ class MTProtoSender:
         self._auto_reconnect = auto_reconnect
         self._connect_timeout = connect_timeout
         self._auth_key_callback = auth_key_callback
-        self._update_callback = update_callback
+        self._updates_queue = updates_queue
         self._auto_reconnect_callback = auto_reconnect_callback
         self._connect_lock = asyncio.Lock()
         self._ping = None
@@ -66,7 +68,7 @@ class MTProtoSender:
         # pending futures should be cancelled.
         self._user_connected = False
         self._reconnecting = False
-        self._disconnected = asyncio.get_event_loop().create_future()
+        self._disconnected = helpers.get_running_loop().create_future()
         self._disconnected.set_result(None)
 
         # We need to join the loops upon disconnection
@@ -108,8 +110,11 @@ class MTProtoSender:
             MsgsStateReq.CONSTRUCTOR_ID: self._handle_state_forgotten,
             MsgResendReq.CONSTRUCTOR_ID: self._handle_state_forgotten,
             MsgsAllInfo.CONSTRUCTOR_ID: self._handle_msg_all,
-            DestroySessionOk: self._handle_destroy_session,
-            DestroySessionNone: self._handle_destroy_session,
+            DestroySessionOk.CONSTRUCTOR_ID: self._handle_destroy_session,
+            DestroySessionNone.CONSTRUCTOR_ID: self._handle_destroy_session,
+            DestroyAuthKeyOk.CONSTRUCTOR_ID: self._handle_destroy_auth_key,
+            DestroyAuthKeyNone.CONSTRUCTOR_ID: self._handle_destroy_auth_key,
+            DestroyAuthKeyFail.CONSTRUCTOR_ID: self._handle_destroy_auth_key,
         }
 
     # Public API
@@ -256,7 +261,7 @@ class MTProtoSender:
             await self._disconnect(error=e)
             raise e
 
-        loop = asyncio.get_event_loop()
+        loop = helpers.get_running_loop()
         self._log.debug('Starting send loop')
         self._send_loop_handle = loop.create_task(self._send_loop())
 
@@ -377,11 +382,8 @@ class MTProtoSender:
             except BufferError as e:
                 # TODO there should probably only be one place to except all these errors
                 if isinstance(e, InvalidBufferError) and e.code == 404:
-                    self._log.info('Broken authorization key; resetting')
-                    self.auth_key.key = None
-                    if self._auth_key_callback:
-                        self._auth_key_callback(None)
-
+                    self._log.info('Server does not know about the current auth key; the session may need to be recreated')
+                    last_error = AuthKeyNotFound()
                     ok = False
                     break
                 else:
@@ -398,7 +400,7 @@ class MTProtoSender:
                 self._pending_state.clear()
 
                 if self._auto_reconnect_callback:
-                    asyncio.get_event_loop().create_task(self._auto_reconnect_callback())
+                    helpers.get_running_loop().create_task(self._auto_reconnect_callback())
 
                 break
         else:
@@ -423,7 +425,7 @@ class MTProtoSender:
             # gets stuck.
             # TODO It still gets stuck? Investigate where and why.
             self._reconnecting = True
-            asyncio.get_event_loop().create_task(self._reconnect(error))
+            helpers.get_running_loop().create_task(self._reconnect(error))
 
     def _keepalive_ping(self, rnd_id):
         """
@@ -505,9 +507,23 @@ class MTProtoSender:
                 self._log.info('Connection closed while receiving data')
                 self._start_reconnect(e)
                 return
+            except InvalidBufferError as e:
+                if e.code == 429:
+                    self._log.warning('Server indicated flood error at transport level: %s', e)
+                    await self._disconnect(error=e)
+                else:
+                    self._log.exception('Server sent invalid buffer')
+                    self._start_reconnect(e)
+                return
+            except Exception as e:
+                self._log.exception('Unhandled error while receiving data')
+                self._start_reconnect(e)
+                return
 
             try:
                 message = self._state.decrypt_message_data(body)
+                if message is None:
+                    continue  # this message is to be ignored
             except TypeNotFoundError as e:
                 # Received object which we don't know how to deserialize
                 self._log.info('Type %08x not found, remaining data %r',
@@ -521,18 +537,14 @@ class MTProtoSender:
                 continue
             except BufferError as e:
                 if isinstance(e, InvalidBufferError) and e.code == 404:
-                    self._log.info('Broken authorization key; resetting')
-                    self.auth_key.key = None
-                    if self._auth_key_callback:
-                        self._auth_key_callback(None)
-
-                    await self._disconnect(error=e)
+                    self._log.info('Server does not know about the current auth key; the session may need to be recreated')
+                    await self._disconnect(error=AuthKeyNotFound())
                 else:
                     self._log.warning('Invalid buffer %s', e)
                     self._start_reconnect(e)
                 return
             except Exception as e:
-                self._log.exception('Unhandled error while receiving data')
+                self._log.exception('Unhandled error while decrypting data')
                 self._start_reconnect(e)
                 return
 
@@ -596,12 +608,20 @@ class MTProtoSender:
             # However receiving a File() with empty bytes is "common".
             # See #658, #759 and #958. They seem to happen in a container
             # which contain the real response right after.
-            try:
-                with BinaryReader(rpc_result.body) as reader:
-                    if not isinstance(reader.tgread_object(), upload.File):
-                        raise ValueError('Not an upload.File')
-            except (TypeNotFoundError, ValueError):
-                self._log.info('Received response without parent request: %s', rpc_result.body)
+            #
+            # But, it might also happen that we get an *error* for no parent request.
+            # If that's the case attempting to read from body which is None would fail with:
+            # "BufferError: No more data left to read (need 4, got 0: b''); last read None".
+            # This seems to be particularly common for "RpcError(error_code=-500, error_message='No workers running')".
+            if rpc_result.error:
+                self._log.info('Received error without parent request: %s', rpc_result.error)
+            else:
+                try:
+                    with BinaryReader(rpc_result.body) as reader:
+                        if not isinstance(reader.tgread_object(), upload.File):
+                            raise ValueError('Not an upload.File')
+                except (TypeNotFoundError, ValueError):
+                    self._log.info('Received response without parent request: %s', rpc_result.body)
             return
 
         if rpc_result.error:
@@ -620,6 +640,7 @@ class MTProtoSender:
                 if not state.future.cancelled():
                     state.future.set_exception(e)
             else:
+                self._store_own_updates(result)
                 if not state.future.cancelled():
                     state.future.set_result(result)
 
@@ -648,12 +669,47 @@ class MTProtoSender:
         try:
             assert message.obj.SUBCLASS_OF_ID == 0x8af52aac  # crc32(b'Updates')
         except AssertionError:
-            self._log.warning('Note: %s is not an update, not dispatching it %s', message.obj)
+            self._log.warning(
+                'Note: %s is not an update, not dispatching it %s',
+                message.obj.__class__.__name__,
+                message.obj
+            )
             return
 
         self._log.debug('Handling update %s', message.obj.__class__.__name__)
-        if self._update_callback:
-            self._update_callback(message.obj)
+        self._updates_queue.put_nowait(message.obj)
+
+    def _store_own_updates(self, obj, *, _update_ids=frozenset((
+        _tl.UpdateShortMessage.CONSTRUCTOR_ID,
+        _tl.UpdateShortChatMessage.CONSTRUCTOR_ID,
+        _tl.UpdateShort.CONSTRUCTOR_ID,
+        _tl.UpdatesCombined.CONSTRUCTOR_ID,
+        _tl.Updates.CONSTRUCTOR_ID,
+        _tl.UpdateShortSentMessage.CONSTRUCTOR_ID,
+    )), _update_like_ids=frozenset((
+        _tl.messages.AffectedHistory.CONSTRUCTOR_ID,
+        _tl.messages.AffectedMessages.CONSTRUCTOR_ID,
+        _tl.messages.AffectedFoundMessages.CONSTRUCTOR_ID,
+    ))):
+        try:
+            if obj.CONSTRUCTOR_ID in _update_ids:
+                obj._self_outgoing = True  # flag to only process, but not dispatch these
+                self._updates_queue.put_nowait(obj)
+            elif obj.CONSTRUCTOR_ID in _update_like_ids:
+                # Ugly "hack" (?) - otherwise bots reliably detect gaps when deleting messages.
+                #
+                # Note: the `date` being `None` is used to check for `updatesTooLong`, so `0` is
+                # used instead. It is still not read, because `updateShort` has no `seq`.
+                #
+                # Some requests, such as `readHistory`, also return these types. But the `pts_count`
+                # seems to be zero, so while this will produce some bogus `updateDeleteMessages`,
+                # it's still one of the "cleaner" approaches to handling the new `pts`.
+                # `updateDeleteMessages` is probably the "least-invasive" update that can be used.
+                upd = _tl.UpdateShort(_tl.UpdateDeleteMessages([], obj.pts, obj.pts_count), 0)
+                upd._self_outgoing = True
+                self._updates_queue.put_nowait(upd)
+        except AttributeError:
+            pass
 
     async def _handle_pong(self, message):
         """
@@ -826,3 +882,26 @@ class MTProtoSender:
         del self._pending_state[msg_id]
         if not state.future.cancelled():
             state.future.set_result(message.obj)
+
+    async def _handle_destroy_auth_key(self, message):
+        """
+        Handles :tl:`DestroyAuthKeyFail`, :tl:`DestroyAuthKeyNone`, and :tl:`DestroyAuthKeyOk`.
+
+        :tl:`DestroyAuthKey` is not intended for users to use, but they still
+        might, and the response won't come in `rpc_result`, so thhat's worked
+        around here.
+        """
+        self._log.debug('Handling destroy auth key %s', message.obj)
+        for msg_id, state in list(self._pending_state.items()):
+            if isinstance(state.request, DestroyAuthKeyRequest):
+                del self._pending_state[msg_id]
+                if not state.future.cancelled():
+                    state.future.set_result(message.obj)
+
+        # If the auth key has been destroyed, that pretty much means the
+        # library can't continue as our auth key will no longer be found
+        # on the server.
+        # Even if the library didn't disconnect, the server would (and then
+        # the library would reconnect and learn about auth key being invalid).
+        if isinstance(message.obj, DestroyAuthKeyOk):
+            await self._disconnect(error=AuthKeyNotFound())

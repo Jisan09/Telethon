@@ -205,7 +205,24 @@ class _MessagesIter(RequestIter):
             message._finish_init(self.client, entities, self.entity)
             self.buffer.append(message)
 
-        if len(r.messages) < self.request.limit:
+        # Not a slice (using offset would return the same, with e.g. SearchGlobal).
+        if isinstance(r, types.messages.Messages):
+            return True
+
+        # Some channels are "buggy" and may return less messages than
+        # requested (apparently, the messages excluded are, for example,
+        # "not displayable due to local laws").
+        #
+        # This means it's not safe to rely on `len(r.messages) < req.limit` as
+        # the stop condition. Unfortunately more requests must be made.
+        #
+        # However we can still check if the highest ID is equal to or lower
+        # than the limit, in which case there won't be any more messages
+        # because the lowest message ID is 1.
+        #
+        # We also assume the API will always return, at least, one message if
+        # there is more to fetch.
+        if not r.messages or r.messages[0].id <= self.request.limit:
             return True
 
         # Get the last message that's not empty (in some rare cases
@@ -620,7 +637,7 @@ class MessageMethods:
             thumb: 'hints.FileLike' = None,
             force_document: bool = False,
             clear_draft: bool = False,
-            buttons: 'hints.MarkupLike' = None,
+            buttons: typing.Optional['hints.MarkupLike'] = None,
             silent: bool = None,
             album: bool = False,
             allow_cache: bool = False,
@@ -628,7 +645,8 @@ class MessageMethods:
             noforwards: bool = None,
             supports_streaming: bool = False,
             schedule: 'hints.DateLike' = None,
-            comment_to: 'typing.Union[int, types.Message]' = None
+            comment_to: 'typing.Union[int, types.Message]' = None,
+            nosound_video: bool = None,
     ) -> 'types.Message':
         """
         Sends a message to the specified user, chat or channel.
@@ -770,8 +788,8 @@ class MessageMethods:
                 buttons=buttons, clear_draft=clear_draft, silent=silent,
                 schedule=schedule, supports_streaming=supports_streaming,
                 formatting_entities=formatting_entities,
-                comment_to=comment_to, background=background, album=album,
-                allow_cache=allow_cache,noforwards=noforwards,send_as=send_as
+                comment_to=comment_to, background=background,
+                nosound_video=nosound_video,
             )
 
         entity = await self.get_input_entity(entity)
@@ -798,6 +816,7 @@ class MessageMethods:
                     reply_to=reply_to,
                     buttons=markup,
                     formatting_entities=message.entities,
+                    parse_mode=None,  # explicitly disable parse_mode to force using even empty formatting_entities
                     schedule=schedule
                 )
 
@@ -853,7 +872,8 @@ class MessageMethods:
                 media=result.media,
                 entities=result.entities,
                 reply_markup=request.reply_markup,
-                ttl_period=result.ttl_period
+                ttl_period=result.ttl_period,
+                reply_to=types.MessageReplyHeader(request.reply_to_msg_id)
             )
             message._finish_init(self, {}, entity)
             return message
@@ -960,7 +980,7 @@ class MessageMethods:
             if isinstance(chunk[0], int):
                 chat = from_peer
             else:
-                chat = await chunk[0].get_input_chat()
+                chat = from_peer or await self.get_input_entity(chunk[0].peer_id)
                 chunk = [m.id for m in chunk]
 
             req = functions.messages.ForwardMessagesRequest(
@@ -995,7 +1015,7 @@ class MessageMethods:
             file: 'hints.FileLike' = None,
             thumb: 'hints.FileLike' = None,
             force_document: bool = False,
-            buttons: 'hints.MarkupLike' = None,
+            buttons: typing.Optional['hints.MarkupLike'] = None,
             supports_streaming: bool = False,
             schedule: 'hints.DateLike' = None
     ) -> 'types.Message':
@@ -1008,7 +1028,7 @@ class MessageMethods:
                 the message to be edited, and the entity will be inferred
                 from it, so the next parameter will be assumed to be the
                 message text.
-                You may also pass a :tl:`InputBotInlineMessageID`,
+                You may also pass a :tl:`InputBotInlineMessageID` or :tl:`InputBotInlineMessageID64`,
                 which is the only way to edit messages that were sent
                 after the user selects an inline query result.
             message (`int` | `Message <telethon.tl.custom.message.Message>` | `str`):
@@ -1066,7 +1086,7 @@ class MessageMethods:
                 trying to edit a message that was sent via inline bots.
         Returns
             The edited `Message <telethon.tl.custom.message.Message>`,
-            unless `entity` was a :tl:`InputBotInlineMessageID` in which
+            unless `entity` was a :tl:`InputBotInlineMessageID` or :tl:`InputBotInlineMessageID64` in which
             case this method returns a boolean.
         Raises
             ``MessageAuthorRequiredError`` if you're not the author of the
@@ -1086,7 +1106,7 @@ class MessageMethods:
                 # or
                 await client.edit_message(message, 'hello!!!')
         """
-        if isinstance(entity, types.InputBotInlineMessageID):
+        if isinstance(entity, (types.InputBotInlineMessageID, types.InputBotInlineMessageID64)):
             text = text or message
             message = entity
         elif isinstance(entity, types.Message):
@@ -1102,7 +1122,7 @@ class MessageMethods:
                 attributes=attributes,
                 force_document=force_document)
 
-        if isinstance(entity, types.InputBotInlineMessageID):
+        if isinstance(entity, (types.InputBotInlineMessageID, types.InputBotInlineMessageID64)):
             request = functions.messages.EditInlineBotMessageRequest(
                 id=entity,
                 message=text,
@@ -1274,11 +1294,15 @@ class MessageMethods:
                 there are no more mentions) or not for the given entity.
                 If no message is provided, this will be the only action
                 taken.
+
             clear_reactions (`bool`):
                 Whether the reactions badge should be cleared (so that
                 there are no more reaction notifications) or not for the given entity.
+
                 If no message is provided, this will be the only action
                 taken.
+
+
         Example
             .. code-block:: python
                 # using a Message object

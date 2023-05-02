@@ -67,8 +67,7 @@ However, you may also be part of a limited country, such as Iran or Russia.
 In that case, we have bad news for you. Telegram is much more likely to ban
 these numbers, as they are often used to spam other accounts, likely through
 the use of libraries like this one. The best advice we can give you is to not
-abuse the API, like calling many requests really quickly, and to sign up with
-these phones through an official application.
+abuse the API, like calling many requests really quickly.
 
 We have also had reports from Kazakhstan and China, where connecting
 would fail. To solve these connection problems, you should use a proxy.
@@ -179,6 +178,69 @@ won't do unnecessary work unless you need to:
         sender = await event.get_sender()
 
 
+What does "Server sent a very new message with ID" mean?
+========================================================
+
+You may also see this error as "Server sent a very old message with ID".
+
+This is a security feature from Telethon that cannot be disabled and is
+meant to protect you against replay attacks.
+
+When this message is incorrectly reported as a "bug",
+the most common patterns seem to be:
+
+* Your system time is incorrect.
+* The proxy you're using may be interfering somehow.
+* The Telethon session is being used or has been used from somewhere else.
+  Make sure that you created the session from Telethon, and are not using the
+  same session anywhere else. If you need to use the same account from
+  multiple places, login and use a different session for each place you need.
+
+
+What does "Server replied with a wrong session ID" mean?
+========================================================
+
+This is a security feature from Telethon that cannot be disabled and is
+meant to protect you against unwanted session reuse.
+
+When this message is reported as a "bug", the most common patterns seem to be:
+
+* The proxy you're using may be interfering somehow.
+* The Telethon session is being used or has been used from somewhere else.
+  Make sure that you created the session from Telethon, and are not using the
+  same session anywhere else. If you need to use the same account from
+  multiple places, login and use a different session for each place you need.
+* You may be using multiple connections to the Telegram server, which seems
+  to confuse Telegram.
+
+Most of the time it should be safe to ignore this warning. If the library
+still doesn't behave correctly, make sure to check if any of the above bullet
+points applies in your case and try to work around it.
+
+If the issue persists and there is a way to reliably reproduce this error,
+please add a comment with any additional details you can provide to
+`issue 3759`_, and perhaps some additional investigation can be done
+(but it's unlikely, as Telegram *is* sending unexpected data).
+
+
+What does "Could not find a matching Constructor ID for the TLObject" mean?
+===========================================================================
+
+Telegram uses "layers", which you can think of as "versions" of the API they
+offer. When Telethon reads responses that the Telegram servers send, these
+need to be deserialized (into what Telethon calls "TLObjects").
+
+Every Telethon version understands a single Telegram layer. When Telethon
+connects to Telegram, both agree on the layer to use. If the layers don't
+match, Telegram may send certain objects which Telethon no longer understands.
+
+When this message is reported as a "bug", the most common patterns seem to be
+that he Telethon session is being used or has been used from somewhere else.
+Make sure that you created the session from Telethon, and are not using the
+same session anywhere else. If you need to use the same account from
+multiple places, login and use a different session for each place you need.
+
+
 What does "bases ChatGetter" mean?
 ==================================
 
@@ -203,6 +265,36 @@ So if you have a message, you can access that too:
 Telegram has a lot to offer, and inheritance helps the library reduce
 boilerplate, so it's important to know this concept. For newcomers,
 this may be a problem, so we explain what it means here in the FAQ.
+
+Can I send files by ID?
+=======================
+
+When people talk about IDs, they often refer to one of two things:
+the integer ID inside media, and a random-looking long string.
+
+You cannot use the integer ID to send media. Generally speaking, sending media
+requires a combination of ID, ``access_hash`` and ``file_reference``.
+The first two are integers, while the last one is a random ``bytes`` sequence.
+
+* The integer ``id`` will always be the same for every account, so every user
+  or bot looking at a particular media file, will see a consistent ID.
+* The ``access_hash`` will always be the same for a given account, but
+  different accounts will each see their own, different ``access_hash``.
+  This makes it impossible to get media object from one account and use it in
+  another. The other account must fetch the media object itself.
+* The ``file_reference`` is random for everyone and will only work for a few
+  hours before it expires. It must be refetched before the media can be used
+  (to either resend the media or download it).
+
+The second type of "`file ID <https://core.telegram.org/bots/api#inputfile>`_"
+people refer to is a concept from the HTTP Bot API. It's a custom format which
+encodes enough information to use the media.
+
+Telethon provides an old version of these HTTP Bot API-style file IDs via
+``message.file.id``, however, this feature is no longer maintained, so it may
+not work. It will be removed in future versions. Nonetheless, it is possible
+to find a different Python package (or write your own) to parse these file IDs
+and construct the necessary input file objects to send or download the media.
 
 
 Can I use Flask with the library?
@@ -239,4 +331,5 @@ file and run that, or use the normal ``python`` interpreter.
 .. _logging: https://docs.python.org/3/library/logging.html
 .. _@SpamBot: https://t.me/SpamBot
 .. _issue 297: https://github.com/LonamiWebs/Telethon/issues/297
-.. _quart_login.py: https://github.com/LonamiWebs/Telethon/tree/master/telethon_examples#quart_loginpy
+.. _issue 3759: https://github.com/LonamiWebs/Telethon/issues/3759
+.. _quart_login.py: https://github.com/LonamiWebs/Telethon/tree/v1/telethon_examples#quart_loginpy

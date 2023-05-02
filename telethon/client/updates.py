@@ -7,10 +7,16 @@ import time
 import traceback
 import typing
 import logging
+import warnings
+from collections import deque
 
 from .. import events, utils, errors
 from ..events.common import EventBuilder, EventCommon
 from ..tl import types, functions
+from .._updates import GapError, PrematureEndReason
+from ..helpers import get_running_loop
+from ..version import __version__
+
 
 if typing.TYPE_CHECKING:
     from .telegramclient import TelegramClient
@@ -26,7 +32,10 @@ class UpdateMethods:
         try:
             # Make a high-level request to notify that we want updates
             await self(functions.updates.GetStateRequest())
-            return await self.disconnected
+            result = await self.disconnected
+            if self._updates_error is not None:
+                raise self._updates_error
+            return result
         except KeyboardInterrupt:
             pass
         finally:
@@ -49,6 +58,8 @@ class UpdateMethods:
 
         It also notifies Telegram that we want to receive updates
         as described in https://core.telegram.org/api/updates.
+        If an unexpected error occurs during update handling,
+        the client will disconnect and said error will be raised.
 
         Manual disconnections can be made by calling `disconnect()
         <telethon.client.telegrambaseclient.TelegramBaseClient.disconnect>`
@@ -237,106 +248,210 @@ class UpdateMethods:
 
                 await client.catch_up()
         """
-        pts, date = self._state_cache[None]
-        if not pts:
-            return
-
-        self.session.catching_up = True
-        try:
-            while True:
-                d = await self(functions.updates.GetDifferenceRequest(
-                    pts, date, 0
-                ))
-                if isinstance(d, (types.updates.DifferenceSlice,
-                                  types.updates.Difference)):
-                    if isinstance(d, types.updates.Difference):
-                        state = d.state
-                    else:
-                        state = d.intermediate_state
-
-                    pts, date = state.pts, state.date
-                    self._handle_update(types.Updates(
-                        users=d.users,
-                        chats=d.chats,
-                        date=state.date,
-                        seq=state.seq,
-                        updates=d.other_updates + [
-                            types.UpdateNewMessage(m, 0, 0)
-                            for m in d.new_messages
-                        ]
-                    ))
-
-                    # TODO Implement upper limit (max_pts)
-                    # We don't want to fetch updates we already know about.
-                    #
-                    # We may still get duplicates because the Difference
-                    # contains a lot of updates and presumably only has
-                    # the state for the last one, but at least we don't
-                    # unnecessarily fetch too many.
-                    #
-                    # updates.getDifference's pts_total_limit seems to mean
-                    # "how many pts is the request allowed to return", and
-                    # if there is more than that, it returns "too long" (so
-                    # there would be duplicate updates since we know about
-                    # some). This can be used to detect collisions (i.e.
-                    # it would return an update we have already seen).
-                else:
-                    if isinstance(d, types.updates.DifferenceEmpty):
-                        date = d.date
-                    elif isinstance(d, types.updates.DifferenceTooLong):
-                        pts = d.pts
-                    break
-        except (ConnectionError, asyncio.CancelledError):
-            pass
-        finally:
-            # TODO Save new pts to session
-            self._state_cache._pts_date = (pts, date)
-            self.session.catching_up = False
+        await self._updates_queue.put(types.UpdatesTooLong())
 
     # endregion
 
     # region Private methods
 
-    # It is important to not make _handle_update async because we rely on
-    # the order that the updates arrive in to update the pts and date to
-    # be always-increasing. There is also no need to make this async.
-    def _handle_update(self: 'TelegramClient', update):
-        self.session.process_entities(update)
-        self._entity_cache.add(update)
-
-        if isinstance(update, (types.Updates, types.UpdatesCombined)):
-            entities = {utils.get_peer_id(x): x for x in
-                        itertools.chain(update.users, update.chats)}
-            for u in update.updates:
-                self._process_update(u, update.updates, entities=entities)
-        elif isinstance(update, types.UpdateShort):
-            self._process_update(update.update, None)
-        else:
-            self._process_update(update, None)
-
-        self._state_cache.update(update)
-
-    def _process_update(self: 'TelegramClient', update, others, entities=None):
-        update._entities = entities or {}
-
-        # This part is somewhat hot so we don't bother patching
-        # update with channel ID/its state. Instead we just pass
-        # arguments which is faster.
-        channel_id = self._state_cache.get_channel_id(update)
-        args = (update, others, channel_id, self._state_cache[channel_id])
-        if self._dispatching_updates_queue is None:
-            task = self.loop.create_task(self._dispatch_update(*args))
-            self._updates_queue.add(task)
-            task.add_done_callback(lambda _: self._updates_queue.discard(task))
-        else:
-            self._updates_queue.put_nowait(args)
-            if not self._dispatching_updates_queue.is_set():
-                self._dispatching_updates_queue.set()
-                self.loop.create_task(self._dispatch_queue_updates())
-
-        self._state_cache.update(update)
-
     async def _update_loop(self: 'TelegramClient'):
+        # If the MessageBox is not empty, the account had to be logged-in to fill in its state.
+        # This flag is used to propagate the "you got logged-out" error up (but getting logged-out
+        # can only happen if it was once logged-in).
+        was_once_logged_in = self._authorized is True or not self._message_box.is_empty()
+
+        self._updates_error = None
+        try:
+            if self._catch_up:
+                # User wants to catch up as soon as the client is up and running,
+                # so this is the best place to do it.
+                await self.catch_up()
+
+            updates_to_dispatch = deque()
+
+            while self.is_connected():
+                if updates_to_dispatch:
+                    if self._sequential_updates:
+                        await self._dispatch_update(updates_to_dispatch.popleft())
+                    else:
+                        while updates_to_dispatch:
+                            # TODO if _dispatch_update fails for whatever reason, it's not logged! this should be fixed
+                            task = self.loop.create_task(self._dispatch_update(updates_to_dispatch.popleft()))
+                            self._event_handler_tasks.add(task)
+                            task.add_done_callback(self._event_handler_tasks.discard)
+
+                    continue
+
+                if len(self._mb_entity_cache) >= self._entity_cache_limit:
+                    self._log[__name__].info(
+                        'In-memory entity cache limit reached (%s/%s), flushing to session',
+                        len(self._mb_entity_cache),
+                        self._entity_cache_limit
+                    )
+                    self._save_states_and_entities()
+                    self._mb_entity_cache.retain(lambda id: id == self._mb_entity_cache.self_id or id in self._message_box.map)
+                    if len(self._mb_entity_cache) >= self._entity_cache_limit:
+                        warnings.warn('in-memory entities exceed entity_cache_limit after flushing; consider setting a larger limit')
+
+                    self._log[__name__].info(
+                        'In-memory entity cache at %s/%s after flushing to session',
+                        len(self._mb_entity_cache),
+                        self._entity_cache_limit
+                    )
+
+
+                get_diff = self._message_box.get_difference()
+                if get_diff:
+                    self._log[__name__].debug('Getting difference for account updates')
+                    try:
+                        diff = await self(get_diff)
+                    except (errors.ServerError, errors.TimeoutError, ValueError) as e:
+                        # Telegram is having issues
+                        self._log[__name__].info('Cannot get difference since Telegram is having issues: %s', type(e).__name__)
+                        self._message_box.end_difference()
+                        continue
+                    except (errors.UnauthorizedError, errors.AuthKeyError) as e:
+                        # Not logged in or broken authorization key, can't get difference
+                        self._log[__name__].info('Cannot get difference since the account is not logged in: %s', type(e).__name__)
+                        self._message_box.end_difference()
+                        if was_once_logged_in:
+                            self._updates_error = e
+                            await self.disconnect()
+                            break
+                        continue
+                    except OSError as e:
+                        # Network is likely down, but it's unclear for how long.
+                        # If disconnect is called this task will be cancelled along with the sleep.
+                        # If disconnect is not called, getting difference should be retried after a few seconds.
+                        self._log[__name__].info('Cannot get difference since the network is down: %s: %s', type(e).__name__, e)
+                        await asyncio.sleep(5)
+                        continue
+                    updates, users, chats = self._message_box.apply_difference(diff, self._mb_entity_cache)
+                    if updates:
+                        self._log[__name__].info('Got difference for account updates')
+
+                    updates_to_dispatch.extend(self._preprocess_updates(updates, users, chats))
+                    continue
+
+                get_diff = self._message_box.get_channel_difference(self._mb_entity_cache)
+                if get_diff:
+                    self._log[__name__].debug('Getting difference for channel %s updates', get_diff.channel.channel_id)
+                    try:
+                        diff = await self(get_diff)
+                    except (errors.UnauthorizedError, errors.AuthKeyError) as e:
+                        # Not logged in or broken authorization key, can't get difference
+                        self._log[__name__].warning(
+                            'Cannot get difference for channel %s since the account is not logged in: %s',
+                            get_diff.channel.channel_id, type(e).__name__
+                        )
+                        self._message_box.end_channel_difference(
+                            get_diff,
+                            PrematureEndReason.TEMPORARY_SERVER_ISSUES,
+                            self._mb_entity_cache
+                        )
+                        if was_once_logged_in:
+                            self._updates_error = e
+                            await self.disconnect()
+                            break
+                        continue
+                    except (
+                        errors.PersistentTimestampOutdatedError,
+                        errors.PersistentTimestampInvalidError,
+                        errors.ServerError,
+                        errors.TimeoutError,
+                        ValueError
+                    ) as e:
+                        # According to Telegram's docs:
+                        # "Channel internal replication issues, try again later (treat this like an RPC_CALL_FAIL)."
+                        # We can treat this as "empty difference" and not update the local pts.
+                        # Then this same call will be retried when another gap is detected or timeout expires.
+                        #
+                        # Another option would be to literally treat this like an RPC_CALL_FAIL and retry after a few
+                        # seconds, but if Telegram is having issues it's probably best to wait for it to send another
+                        # update (hinting it may be okay now) and retry then.
+                        #
+                        # This is a bit hacky because MessageBox doesn't really have a way to "not update" the pts.
+                        # Instead we manually extract the previously-known pts and use that.
+                        #
+                        # For PersistentTimestampInvalidError:
+                        # Somehow our pts is either too new or the server does not know about this.
+                        # We treat this as PersistentTimestampOutdatedError for now.
+                        # TODO investigate why/when this happens and if this is the proper solution
+                        self._log[__name__].warning(
+                            'Getting difference for channel updates %s caused %s;'
+                            ' ending getting difference prematurely until server issues are resolved',
+                            get_diff.channel.channel_id, type(e).__name__
+                        )
+                        self._message_box.end_channel_difference(
+                            get_diff,
+                            PrematureEndReason.TEMPORARY_SERVER_ISSUES,
+                            self._mb_entity_cache
+                        )
+                        continue
+                    except (errors.ChannelPrivateError, errors.ChannelInvalidError):
+                        # Timeout triggered a get difference, but we have been banned in the channel since then.
+                        # Because we can no longer fetch updates from this channel, we should stop keeping track
+                        # of it entirely.
+                        self._log[__name__].info(
+                            'Account is now banned in %d so we can no longer fetch updates from it',
+                            get_diff.channel.channel_id
+                        )
+                        self._message_box.end_channel_difference(
+                            get_diff,
+                            PrematureEndReason.BANNED,
+                            self._mb_entity_cache
+                        )
+                        continue
+                    except OSError as e:
+                        self._log[__name__].info(
+                            'Cannot get difference for channel %d since the network is down: %s: %s',
+                            get_diff.channel.channel_id, type(e).__name__, e
+                        )
+                        await asyncio.sleep(5)
+                        continue
+
+                    updates, users, chats = self._message_box.apply_channel_difference(get_diff, diff, self._mb_entity_cache)
+                    if updates:
+                        self._log[__name__].info('Got difference for channel %d updates', get_diff.channel.channel_id)
+
+                    updates_to_dispatch.extend(self._preprocess_updates(updates, users, chats))
+                    continue
+
+                deadline = self._message_box.check_deadlines()
+                deadline_delay = deadline - get_running_loop().time()
+                if deadline_delay > 0:
+                    # Don't bother sleeping and timing out if the delay is already 0 (pollutes the logs).
+                    try:
+                        updates = await asyncio.wait_for(self._updates_queue.get(), deadline_delay)
+                    except asyncio.TimeoutError:
+                        self._log[__name__].debug('Timeout waiting for updates expired')
+                        continue
+                else:
+                    continue
+
+                processed = []
+                try:
+                    users, chats = self._message_box.process_updates(updates, self._mb_entity_cache, processed)
+                except GapError:
+                    continue  # get(_channel)_difference will start returning requests
+
+                updates_to_dispatch.extend(self._preprocess_updates(processed, users, chats))
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._log[__name__].exception(f'Fatal error handling updates (this is a bug in Telethon v{__version__}, please report it)')
+            self._updates_error = e
+            await self.disconnect()
+
+    def _preprocess_updates(self, updates, users, chats):
+        self._mb_entity_cache.extend(users, chats)
+        entities = {utils.get_peer_id(x): x
+                    for x in itertools.chain(users, chats)}
+        for u in updates:
+            u._entities = entities
+        return updates
+
+    async def _keepalive_loop(self: 'TelegramClient'):
         # Pings' ID don't really need to be secure, just "random"
         rnd = lambda: random.randrange(-2**63, 2**63)
         while self.is_connected():
@@ -372,57 +487,18 @@ class UpdateMethods:
             # inserted because this is a rather expensive operation
             # (default's sqlite3 takes ~0.1s to commit changes). Do
             # it every minute instead. No-op if there's nothing new.
+            self._save_states_and_entities()
+
             self.session.save()
 
-            # We need to send some content-related request at least hourly
-            # for Telegram to keep delivering updates, otherwise they will
-            # just stop even if we're connected. Do so every 30 minutes.
-            #
-            # TODO Call getDifference instead since it's more relevant
-            if time.time() - self._last_request > 30 * 60:
-                if not await self.is_user_authorized():
-                    # What can be the user doing for so
-                    # long without being logged in...?
-                    continue
+    async def _dispatch_update(self: 'TelegramClient', update):
+        # TODO only used for AlbumHack, and MessageBox is not really designed for this
+        others = None
 
-                try:
-                    await self(functions.updates.GetStateRequest())
-                except (ConnectionError, asyncio.CancelledError):
-                    return
-
-    async def _dispatch_queue_updates(self: 'TelegramClient'):
-        while not self._updates_queue.empty():
-            await self._dispatch_update(*self._updates_queue.get_nowait())
-
-        self._dispatching_updates_queue.clear()
-
-    async def _dispatch_update(self: 'TelegramClient', update, others, channel_id, pts_date):
-        if not self._entity_cache.ensure_cached(update):
-            # We could add a lock to not fetch the same pts twice if we are
-            # already fetching it. However this does not happen in practice,
-            # which makes sense, because different updates have different pts.
-            if self._state_cache.update(update, check_only=True):
-                # If the update doesn't have pts, fetching won't do anything.
-                # For example, UpdateUserStatus or UpdateChatUserTyping.
-                try:
-                    await self._get_difference(update, channel_id, pts_date)
-                except OSError:
-                    pass  # We were disconnected, that's okay
-                except errors.RPCError:
-                    # There's a high chance the request fails because we lack
-                    # the channel. Because these "happen sporadically" (#1428)
-                    # we should be okay (no flood waits) even if more occur.
-                    pass
-                except ValueError:
-                    # There is a chance that GetFullChannelRequest and GetDifferenceRequest
-                    # inside the _get_difference() function will end up with
-                    # ValueError("Request was unsuccessful N time(s)") for whatever reasons.
-                    pass
-
-        if not self._self_input_peer:
+        if not self._mb_entity_cache.self_id:
             # Some updates require our own ID, so we must make sure
             # that the event builder has offline access to it. Calling
-            # `get_me()` will cache it under `self._self_input_peer`.
+            # `get_me()` will cache it under `self._mb_entity_cache`.
             #
             # It will return `None` if we haven't logged in yet which is
             # fine, we will just retry next time anyway.
@@ -522,67 +598,6 @@ class UpdateMethods:
                 if not isinstance(e, asyncio.CancelledError) or self.is_connected():
                     name = getattr(callback, '__name__', repr(callback))
                     self._log[__name__].exception('Unhandled exception on %s', name)
-
-    async def _get_difference(self: 'TelegramClient', update, channel_id, pts_date):
-        """
-        Get the difference for this `channel_id` if any, then load entities.
-
-        Calls :tl:`updates.getDifference`, which fills the entities cache
-        (always done by `__call__`) and lets us know about the full entities.
-        """
-        # Fetch since the last known pts/date before this update arrived,
-        # in order to fetch this update at full, including its entities.
-        self._log[__name__].debug('Getting difference for entities '
-                                  'for %r', update.__class__)
-        if channel_id:
-            # There are reports where we somehow call get channel difference
-            # with `InputPeerEmpty`. Check our assumptions to better debug
-            # this when it happens.
-            assert isinstance(channel_id, int), 'channel_id was {}, not int in {}'.format(type(channel_id), update)
-            try:
-                # Wrap the ID inside a peer to ensure we get a channel back.
-                where = await self.get_input_entity(types.PeerChannel(channel_id))
-            except ValueError:
-                # There's a high chance that this fails, since
-                # we are getting the difference to fetch entities.
-                return
-
-            if not pts_date:
-                # First-time, can't get difference. Get pts instead.
-                result = await self(functions.channels.GetFullChannelRequest(
-                    utils.get_input_channel(where)
-                ))
-                self._state_cache[channel_id] = result.full_chat.pts
-                return
-
-            result = await self(functions.updates.GetChannelDifferenceRequest(
-                channel=where,
-                filter=types.ChannelMessagesFilterEmpty(),
-                pts=pts_date,  # just pts
-                limit=100,
-                force=True
-            ))
-        else:
-            if not pts_date[0]:
-                # First-time, can't get difference. Get pts instead.
-                result = await self(functions.updates.GetStateRequest())
-                self._state_cache[None] = result.pts, result.date
-                return
-
-            result = await self(functions.updates.GetDifferenceRequest(
-                pts=pts_date[0],
-                date=pts_date[1],
-                qts=0
-            ))
-
-        if isinstance(result, (types.updates.Difference,
-                               types.updates.DifferenceSlice,
-                               types.updates.ChannelDifference,
-                               types.updates.ChannelDifferenceTooLong)):
-            update._entities.update({
-                utils.get_peer_id(x): x for x in
-                itertools.chain(result.users, result.chats)
-            })
 
     async def _handle_auto_reconnect(self: 'TelegramClient'):
         # TODO Catch-up

@@ -7,8 +7,6 @@ import os
 import time
 import sys
 
-loop = asyncio.get_event_loop()
-
 """
 Provider token can be obtained via @BotFather. more info at https://core.telegram.org/bots/payments#getting-a-token
 
@@ -85,9 +83,9 @@ async def payment_received_handler(event):
         payment: types.MessageActionPaymentSentMe = event.message.action
         # do something after payment was received
         if payment.payload.decode('UTF-8') == 'product A':
-            await bot.send_message(event.message.from_id, 'Thank you for buying product A!')
+            await bot.send_message(event.message.peer_id.user_id, 'Thank you for buying product A!')
         elif payment.payload.decode('UTF-8') == 'product B':
-            await bot.send_message(event.message.from_id, 'Thank you for buying product B!')
+            await bot.send_message(event.message.peer_id.user_id, 'Thank you for buying product B!')
         raise events.StopPropagation
 
 
@@ -180,4 +178,4 @@ if __name__ == '__main__':
     if not provider_token:
         logger.error("No provider token supplied.")
         exit(1)
-    loop.run_until_complete(main())
+    asyncio.run(main())

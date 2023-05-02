@@ -151,7 +151,7 @@ class CallbackQuery(EventBuilder):
         def _set_client(self, client):
             super()._set_client(client)
             self._sender, self._input_sender = utils._get_entity_pair(
-                self.sender_id, self._entities, client._entity_cache)
+                self.sender_id, self._entities, client._mb_entity_cache)
 
         @property
         def id(self):
@@ -208,8 +208,9 @@ class CallbackQuery(EventBuilder):
             if not getattr(self._input_sender, 'access_hash', True):
                 # getattr with True to handle the InputPeerSelf() case
                 try:
-                    self._input_sender = self._client._entity_cache[self._sender_id]
-                except KeyError:
+                    self._input_sender = self._client._mb_entity_cache.get(
+                        utils.resolve_id(self._sender_id)[0])._as_input_peer()
+                except AttributeError:
                     m = await self.get_message()
                     if m:
                         self._sender = m._sender
@@ -299,7 +300,7 @@ class CallbackQuery(EventBuilder):
             """
             Edits the message. Shorthand for
             `telethon.client.messages.MessageMethods.edit_message` with
-            the ``entity`` set to the correct :tl:`InputBotInlineMessageID`.
+            the ``entity`` set to the correct :tl:`InputBotInlineMessageID` or :tl:`InputBotInlineMessageID64`.
 
             Returns `True` if the edit was successful.
 
@@ -312,7 +313,7 @@ class CallbackQuery(EventBuilder):
                 since the message object is normally not present.
             """
             self._client.loop.create_task(self.answer())
-            if isinstance(self.query.msg_id, types.InputBotInlineMessageID):
+            if isinstance(self.query.msg_id, (types.InputBotInlineMessageID, types.InputBotInlineMessageID64)):
                 return await self._client.edit_message(
                     self.query.msg_id, *args, **kwargs
                 )
