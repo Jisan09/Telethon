@@ -284,11 +284,8 @@ class UserMethods:
             if isinstance(x, str):
                 inputs.append(x)
             else:
-                try:
-                    cat = await self.get_input_entity(x)
-                    inputs.append(cat)
-                except ValueError:
-                    pass
+                inputs.append(await self.get_input_entity(x))
+
         lists = {
             helpers._EntityType.USER: [],
             helpers._EntityType.CHAT: [],
