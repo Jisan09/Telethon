@@ -380,7 +380,7 @@ class UploadMethods:
                     progress_callback=used_callback, reply_to=reply_to,
                     parse_mode=parse_mode, silent=silent, schedule=schedule,
                     supports_streaming=supports_streaming, clear_draft=clear_draft,
-                    force_document=force_document, background=background,
+                    force_document=force_document, background=background,spoiler=spoiler,
                 )
                 file = file[10:]
                 captions = captions[10:]
@@ -407,7 +407,7 @@ class UploadMethods:
         # e.g. invalid cast from :tl:`MessageMediaWebPage`
         if not media:
             raise TypeError('Cannot use {!r} as file'.format(file))
-
+        
         markup = self.build_reply_markup(buttons)
         request = functions.messages.SendMediaRequest(
             entity, media, reply_to_msg_id=reply_to, message=caption,
@@ -457,13 +457,13 @@ class UploadMethods:
             fh, fm, _ = await self._file_to_media(
                 file, supports_streaming=supports_streaming,
                 force_document=force_document, ttl=ttl,
-                progress_callback=used_callback, nosound_video=True)
+                progress_callback=used_callback, nosound_video=True, spoiler=spoiler)
             if isinstance(fm, (types.InputMediaUploadedPhoto, types.InputMediaPhotoExternal)):
                 r = await self(functions.messages.UploadMediaRequest(
                     entity, media=fm
                 ))
 
-                fm = utils.get_input_media(r.photo)
+                fm = utils.get_input_media(r.photo, spoiler=spoiler)
             elif isinstance(fm, types.InputMediaUploadedDocument):
                 r = await self(functions.messages.UploadMediaRequest(
                     entity, media=fm
@@ -736,13 +736,13 @@ class UploadMethods:
             )
         elif re.match('https?://', file):
             if as_image:
-                media = types.InputMediaPhotoExternal(file, ttl_seconds=ttl)
+                media = types.InputMediaPhotoExternal(file, ttl_seconds=ttl, spoiler=spoiler)
             else:
-                media = types.InputMediaDocumentExternal(file, ttl_seconds=ttl)
+                media = types.InputMediaDocumentExternal(file, ttl_seconds=ttl, spoiler=spoiler)
         else:
             bot_file = utils.resolve_bot_file_id(file)
             if bot_file:
-                media = utils.get_input_media(bot_file, ttl=ttl)
+                media = utils.get_input_media(bot_file, ttl=ttl, spoiler=spoiler)
 
         if media:
             pass  # Already have media, don't check the rest
@@ -752,7 +752,7 @@ class UploadMethods:
                 'an HTTP URL or a valid bot-API-like file ID'.format(file)
             )
         elif as_image:
-            media = types.InputMediaUploadedPhoto(file_handle, ttl_seconds=ttl)
+            media = types.InputMediaUploadedPhoto(file_handle, ttl_seconds=ttl, spoiler=spoiler)
         else:
             attributes, mime_type = utils.get_attributes(
                 file,
@@ -775,7 +775,7 @@ class UploadMethods:
             # setting `nosound_video` to `True` doesn't affect videos with sound
             # instead it prevents sending silent videos as GIFs
             nosound_video = nosound_video if mime_type.split("/")[0] == 'video' else None
-
+            
             media = types.InputMediaUploadedDocument(
                 file=file_handle,
                 mime_type=mime_type,
@@ -783,6 +783,7 @@ class UploadMethods:
                 thumb=thumb,
                 force_file=force_document and not is_image,
                 ttl_seconds=ttl,
-                nosound_video=nosound_video
+                nosound_video=nosound_video,
+                spoiler=spoiler
             )
         return file_handle, media, as_image
