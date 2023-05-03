@@ -646,6 +646,7 @@ class MessageMethods:
             supports_streaming: bool = False,
             schedule: 'hints.DateLike' = None,
             comment_to: 'typing.Union[int, types.Message]' = None,
+            spoiler: bool = False,
             nosound_video: bool = None,
     ) -> 'types.Message':
         """
@@ -789,7 +790,7 @@ class MessageMethods:
                 schedule=schedule, supports_streaming=supports_streaming,
                 formatting_entities=formatting_entities,
                 comment_to=comment_to, background=background,
-                nosound_video=nosound_video,
+                spoiler=spoiler,nosound_video=nosound_video,
             )
 
         entity = await self.get_input_entity(entity)

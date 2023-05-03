@@ -430,7 +430,7 @@ def get_input_media(
         media, *,
         is_photo=False, attributes=None, force_document=False,
         voice_note=False, video_note=False, supports_streaming=False,
-        ttl=None
+        ttl=None, spoiler=False
 ):
     """
     Similar to :meth:`get_input_peer`, but for media.
@@ -443,39 +443,43 @@ def get_input_media(
         if media.SUBCLASS_OF_ID == 0xfaf846f4:  # crc32(b'InputMedia')
             return media
         elif media.SUBCLASS_OF_ID == 0x846363e0:  # crc32(b'InputPhoto')
-            return types.InputMediaPhoto(media, ttl_seconds=ttl)
+            return types.InputMediaPhoto(media, ttl_seconds=ttl, spoiler=spoiler)
         elif media.SUBCLASS_OF_ID == 0xf33fdb68:  # crc32(b'InputDocument')
-            return types.InputMediaDocument(media, ttl_seconds=ttl)
+            return types.InputMediaDocument(media, ttl_seconds=ttl, spoiler=spoiler)
     except AttributeError:
         _raise_cast_fail(media, 'InputMedia')
 
     if isinstance(media, types.MessageMediaPhoto):
         return types.InputMediaPhoto(
             id=get_input_photo(media.photo),
-            ttl_seconds=ttl or media.ttl_seconds
+            ttl_seconds=ttl or media.ttl_seconds,
+            spoiler=spoiler
         )
 
     if isinstance(media, (types.Photo, types.photos.Photo, types.PhotoEmpty)):
         return types.InputMediaPhoto(
             id=get_input_photo(media),
-            ttl_seconds=ttl
+            ttl_seconds=ttl,
+            spoiler=spoiler
         )
 
     if isinstance(media, types.MessageMediaDocument):
         return types.InputMediaDocument(
             id=get_input_document(media.document),
-            ttl_seconds=ttl or media.ttl_seconds
+            ttl_seconds=ttl or media.ttl_seconds,
+            spoiler=spoiler
         )
 
     if isinstance(media, (types.Document, types.DocumentEmpty)):
         return types.InputMediaDocument(
             id=get_input_document(media),
-            ttl_seconds=ttl
+            ttl_seconds=ttl,
+            spoiler=spoiler
         )
 
     if isinstance(media, (types.InputFile, types.InputFileBig)):
         if is_photo:
-            return types.InputMediaUploadedPhoto(file=media, ttl_seconds=ttl)
+            return types.InputMediaUploadedPhoto(file=media, ttl_seconds=ttl,spoiler=spoiler)
         else:
             attrs, mime = get_attributes(
                 media,
@@ -487,7 +491,7 @@ def get_input_media(
             )
             return types.InputMediaUploadedDocument(
                 file=media, mime_type=mime, attributes=attrs, force_file=force_document,
-                ttl_seconds=ttl)
+                ttl_seconds=ttl, spoiler=spoiler)
 
     if isinstance(media, types.MessageMediaGame):
         return types.InputMediaGame(id=types.InputGameID(

@@ -112,6 +112,7 @@ class UploadMethods:
             video_note: bool = False,
             buttons: typing.Optional['hints.MarkupLike'] = None,
             silent: bool = None,
+            spoiler: bool = False,
             background: bool = None,
             supports_streaming: bool = False,
             schedule: 'hints.DateLike' = None,
@@ -400,7 +401,7 @@ class UploadMethods:
             attributes=attributes,  allow_cache=allow_cache, thumb=thumb,
             voice_note=voice_note, video_note=video_note,
             supports_streaming=supports_streaming, ttl=ttl,
-            nosound_video=nosound_video,
+            nosound_video=nosound_video,spoiler=spoiler,
         )
 
         # e.g. invalid cast from :tl:`MessageMediaWebPage`
@@ -420,7 +421,7 @@ class UploadMethods:
                           progress_callback=None, reply_to=None,
                           parse_mode=(), silent=None, schedule=None,
                           supports_streaming=None, clear_draft=None,
-                          force_document=False, background=None, ttl=None):
+                          force_document=False, background=None, ttl=None,spoiler=False):
         """Specialized version of .send_file for albums"""
         # We don't care if the user wants to avoid cache, we will use it
         # anyway. Why? The cached version will be exactly the same thing
@@ -469,7 +470,7 @@ class UploadMethods:
                 ))
 
                 fm = utils.get_input_media(
-                   r.document, supports_streaming=supports_streaming)
+                   r.document, supports_streaming=supports_streaming, spoiler=spoiler)
 
             if captions:
                 caption, msg_entities = captions.pop()
@@ -686,7 +687,7 @@ class UploadMethods:
             progress_callback=None, attributes=None, thumb=None,
             allow_cache=True, voice_note=False, video_note=False,
             supports_streaming=False, mime_type=None, as_image=None,
-            ttl=None, nosound_video=None):
+            ttl=None, nosound_video=None,spoiler=False):
         if not file:
             return None, None, None
 
@@ -716,7 +717,7 @@ class UploadMethods:
                     voice_note=voice_note,
                     video_note=video_note,
                     supports_streaming=supports_streaming,
-                    ttl=ttl
+                    ttl=ttl,spoiler=spoiler
                 ), as_image)
             except TypeError:
                 # Can't turn whatever was given into media
@@ -785,5 +786,3 @@ class UploadMethods:
                 nosound_video=nosound_video
             )
         return file_handle, media, as_image
-
-    # endregion
