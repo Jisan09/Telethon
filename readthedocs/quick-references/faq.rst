@@ -60,6 +60,16 @@ And except them as such:
 My account was deleted/limited when using the library
 =====================================================
 
+First and foremost, **this is not a problem exclusive to Telethon.
+Any third-party library is prone to cause the accounts to appear banned.**
+Even official applications can make Telegram ban an account under certain
+circumstances. Third-party libraries such as Telethon are a lot easier to
+use, and as such, they are misused to spam, which causes Telegram to learn
+certain patterns and ban suspicious activity.
+
+There is no point in Telethon trying to circumvent this. Even if it succeeded,
+spammers would then abuse the library again, and the cycle would repeat.
+
 The library will only do things that you tell it to do. If you use
 the library with bad intentions, Telegram will hopefully ban you.
 
@@ -74,6 +84,16 @@ would fail. To solve these connection problems, you should use a proxy.
 
 Telegram may also ban virtual (VoIP) phone numbers,
 as again, they're likely to be used for spam.
+
+More recently (year 2023 onwards), Telegram has started putting a lot more
+measures to prevent spam (with even additions such as anonymous participants
+in groups or the inability to fetch group members at all). This means some
+of the anti-spam measures have gotten more aggressive.
+
+The recommendation has usually been to use the library only on well-established
+accounts (and not an account you just created), and to not perform actions that
+could be seen as abuse. Telegram decides what those actions are, and they're
+free to change how they operate at any time.
 
 If you want to check if your account has been limited,
 simply send a private message to `@SpamBot`_ through Telegram itself.
@@ -178,6 +198,23 @@ won't do unnecessary work unless you need to:
         sender = await event.get_sender()
 
 
+File download is slow or sending files takes too long
+=====================================================
+
+The communication with Telegram is encrypted. Encryption requires a lot of
+math, and doing it in pure Python is very slow. ``cryptg`` is a library which
+containns the encryption functions used by Telethon. If it is installed (via
+``pip install cryptg``), it will automatically be used and should provide
+a considerable speed boost. You can know whether it's used by configuring
+``logging`` (at ``INFO`` level or lower) *before* importing ``telethon``.
+
+Note that the library does *not* download or upload files in parallel, which
+can also help with the speed of downloading or uploading a single file. There
+are snippets online implementing that. The reason why this is not built-in
+is because the limiting factor in the long run are ``FloodWaitError``, and
+using parallel download or uploads only makes them occur sooner.
+
+
 What does "Server sent a very new message with ID" mean?
 ========================================================
 
@@ -239,6 +276,57 @@ that he Telethon session is being used or has been used from somewhere else.
 Make sure that you created the session from Telethon, and are not using the
 same session anywhere else. If you need to use the same account from
 multiple places, login and use a different session for each place you need.
+
+
+What does "Task was destroyed but it is pending" mean?
+======================================================
+
+Your script likely finished abruptly, the ``asyncio`` event loop got
+destroyed, and the library did not get a chance to properly close the
+connection and close the session.
+
+Make sure you're either using the context manager for the client or always
+call ``await client.disconnect()`` (by e.g. using a ``try/finally``).
+
+
+What does "The asyncio event loop must not change after connection" mean?
+=========================================================================
+
+Telethon uses ``asyncio``, and makes use of things like tasks and queues
+internally to manage the connection to the server and match responses to the
+requests you make. Most of them are initialized after the client is connected.
+
+For example, if the library expects a result to a request made in loop A, but
+you attempt to get that result in loop B, you will very likely find a deadlock.
+To avoid a deadlock, the library checks to make sure the loop in use is the
+same as the one used to initialize everything, and if not, it throws an error.
+
+The most common cause is ``asyncio.run``, since it creates a new event loop.
+If you ``asyncio.run`` a function to create the client and set it up, and then
+you ``asyncio.run`` another function to do work, things won't work, so the
+library throws an error early to let you know something is wrong.
+
+Instead, it's often a good idea to have a single ``async def main`` and simply
+``asyncio.run()`` it and do all the work there. From it, you're also able to
+call other ``async def`` without having to touch ``asyncio.run`` again:
+
+.. code-block:: python
+
+    # It's fine to create the client outside as long as you don't connect
+    client = TelegramClient(...)
+
+    async def main():
+        # Now the client will connect, so the loop must not change from now on.
+        # But as long as you do all the work inside main, including calling
+        # other async functions, things will work.
+        async with client:
+            ....
+
+    if __name__ == '__main__':
+        asyncio.run(main())
+
+Be sure to read the ``asyncio`` documentation if you want a better
+understanding of event loop, tasks, and what functions you can use.
 
 
 What does "bases ChatGetter" mean?
