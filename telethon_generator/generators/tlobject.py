@@ -197,7 +197,7 @@ def _write_class_init(tlobject, kind, type_constructors, builder):
     if not tlobject.real_args:
         return
 
-    if any(a.name in __builtins__ for a in tlobject.real_args):
+    if any(hasattr(__builtins__, a.name) for a in tlobject.real_args):
         builder.writeln('# noinspection PyShadowingBuiltins')
 
     builder.writeln("def __init__({}):", ', '.join(['self'] + args))
@@ -667,6 +667,7 @@ def _write_all_tlobjects(tlobjects, layer, builder):
     builder.current_indent += 1
 
     # Fill the dictionary (0x1a2b3c4f: tl.full.type.path.Class)
+    tlobjects.sort(key=lambda x: x.name)
     for tlobject in tlobjects:
         builder.write('{:#010x}: ', tlobject.id)
         builder.write('functions' if tlobject.is_function else 'types')

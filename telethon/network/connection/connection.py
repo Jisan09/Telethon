@@ -116,9 +116,15 @@ class Connection(abc.ABC):
             # python_socks internal errors are not inherited from
             # builtin IOError (just from Exception). Instead of adding those
             # in exceptions clauses everywhere through the code, we
-            # rather monkey-patch them in place.
+            # rather monkey-patch them in place. Keep in mind that
+            # ProxyError takes error_code as keyword argument.
 
-            python_socks._errors.ProxyError = ConnectionError
+            class ConnectionErrorExtra(ConnectionError):
+                def __init__(self, message, error_code=None):
+                    super().__init__()
+                    self.error_code = error_code
+
+            python_socks._errors.ProxyError = ConnectionErrorExtra
             python_socks._errors.ProxyConnectionError = ConnectionError
             python_socks._errors.ProxyTimeoutError = ConnectionError
 
@@ -256,6 +262,8 @@ class Connection(abc.ABC):
         if not self._connected:
             return
 
+        self._connected = False
+
         await helpers._cancel(
             self._log,
             send_task=self._send_task,
@@ -278,8 +286,6 @@ class Connection(abc.ABC):
                     # * OSError: [Errno 32] Broken pipe
                     # * ConnectionResetError
                     self._log.info('%s during disconnect: %s', type(e), e)
-
-        self._connected = False
 
     def send(self, data):
         """
@@ -333,6 +339,8 @@ class Connection(abc.ABC):
             while self._connected:
                 try:
                     data = await self._recv()
+                except asyncio.CancelledError:
+                    break
                 except (IOError, asyncio.IncompleteReadError) as e:
                     self._log.warning('Server closed the connection: %s', e)
                     await self._recv_queue.put((None, e))
@@ -349,8 +357,6 @@ class Connection(abc.ABC):
                     await self.disconnect()
                 else:
                     await self._recv_queue.put((data, None))
-        except asyncio.CancelledError:
-            pass
         finally:
             await self.disconnect()
 

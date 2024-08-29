@@ -68,6 +68,12 @@ class Message(ChatGetter, SenderGetter, TLObject):
         noforwards (`bool`):
             Whether this message can be forwarded or not.
 
+        invert_media (`bool`):
+            Whether the media in this message should be inverted.
+            
+        offline (`bool`):
+            Whether the message was sent by an implicit action, for example, as an away or a greeting business message, or as a scheduled message.
+
         id (`int`):
             The ID of this message. This field is *always* present.
             Any other member is optional and may be `None`.
@@ -160,55 +166,26 @@ class Message(ChatGetter, SenderGetter, TLObject):
         action (:tl:`MessageAction`):
             The message action object of the message for :tl:`MessageService`
             instances, which will be `None` for other types of messages.
+
+        saved_peer_id (:tl:`Peer`)
     """
 
     # region Initialization
 
     def __init__(
-            # Common to all
-            self, id: int,
-
-            # Common to Message and MessageService (mandatory)
-            peer_id: types.TypePeer = None,
-            date: Optional[datetime] = None,
-
-            # Common to Message and MessageService (flags)
-            out: Optional[bool] = None,
-            mentioned: Optional[bool] = None,
-            media_unread: Optional[bool] = None,
-            silent: Optional[bool] = None,
-            post: Optional[bool] = None,
-            from_id: Optional[types.TypePeer] = None,
-            reply_to: Optional[types.TypeMessageReplyHeader] = None,
-            ttl_period: Optional[int] = None,
-
-            # For Message (mandatory)
-            message: Optional[str] = None,
-
-            # For Message (flags)
-            fwd_from: Optional[types.TypeMessageFwdHeader] = None,
-            via_bot_id: Optional[int] = None,
-            media: Optional[types.TypeMessageMedia] = None,
-            reply_markup: Optional[types.TypeReplyMarkup] = None,
-            entities: Optional[List[types.TypeMessageEntity]] = None,
-            views: Optional[int] = None,
-            edit_date: Optional[datetime] = None,
-            post_author: Optional[str] = None,
-            grouped_id: Optional[int] = None,
-            from_scheduled: Optional[bool] = None,
-            legacy: Optional[bool] = None,
-            edit_hide: Optional[bool] = None,
-            pinned: Optional[bool] = None,
-            noforwards: Optional[bool] = None,
-            reactions: Optional[types.TypeMessageReactions] = None,
-            restriction_reason: Optional[types.TypeRestrictionReason] = None,
-            forwards: Optional[int] = None,
-            replies: Optional[types.TypeMessageReplies] = None,
-
-            # For MessageAction (mandatory)
-            action: Optional[types.TypeMessageAction] = None
+            self,
+            id: int, peer_id: types.TypePeer,
+            date: Optional[datetime]=None, message: Optional[str]=None,
+            # Copied from Message.__init__ signature
+            out: Optional[bool]=None, mentioned: Optional[bool]=None, media_unread: Optional[bool]=None, silent: Optional[bool]=None, post: Optional[bool]=None, from_scheduled: Optional[bool]=None, legacy: Optional[bool]=None, edit_hide: Optional[bool]=None, pinned: Optional[bool]=None, noforwards: Optional[bool]=None, invert_media: Optional[bool]=None, offline: Optional[bool]=None, from_id: Optional[types.TypePeer]=None, from_boosts_applied: Optional[int]=None, saved_peer_id: Optional[types.TypePeer]=None, fwd_from: Optional[types.TypeMessageFwdHeader]=None, via_bot_id: Optional[int]=None, via_business_bot_id: Optional[int]=None, reply_to: Optional[types.TypeMessageReplyHeader]=None, media: Optional[types.TypeMessageMedia]=None, reply_markup: Optional[types.TypeReplyMarkup]=None, entities: Optional[List[types.TypeMessageEntity]]=None, views: Optional[int]=None, forwards: Optional[int]=None, replies: Optional[types.TypeMessageReplies]=None, edit_date: Optional[datetime]=None, post_author: Optional[str]=None, grouped_id: Optional[int]=None, reactions: Optional[types.TypeMessageReactions]=None, restriction_reason: Optional[List[types.TypeRestrictionReason]]=None, ttl_period: Optional[int]=None, quick_reply_shortcut_id: Optional[int]=None, effect: Optional[int]=None, factcheck: Optional[types.TypeFactCheck]=None,
+            # Copied from MessageService.__init__ signature
+            action: Optional[types.TypeMessageAction]=None
     ):
-        # Common properties to messages, then to service (in the order they're defined in the `.tl`)
+        # Copied from Message.__init__ body
+        self.id = id
+        self.peer_id = peer_id
+        self.date = date
+        self.message = message
         self.out = bool(out)
         self.mentioned = mentioned
         self.media_unread = media_unread
@@ -217,28 +194,33 @@ class Message(ChatGetter, SenderGetter, TLObject):
         self.from_scheduled = from_scheduled
         self.legacy = legacy
         self.edit_hide = edit_hide
-        self.id = id
+        self.pinned = pinned
+        self.noforwards = noforwards
+        self.invert_media = invert_media
+        self.offline = offline
         self.from_id = from_id
-        self.peer_id = peer_id
+        self.from_boosts_applied = from_boosts_applied
+        self.saved_peer_id = saved_peer_id
         self.fwd_from = fwd_from
         self.via_bot_id = via_bot_id
+        self.via_business_bot_id = via_business_bot_id
         self.reply_to = reply_to
-        self.date = date
-        self.message = message
-        self.media =  None if isinstance(media, types.MessageMediaEmpty) else media
+        self.media = None if isinstance(media, types.MessageMediaEmpty) else media
         self.reply_markup = reply_markup
         self.entities = entities
         self.views = views
         self.forwards = forwards
         self.replies = replies
         self.edit_date = edit_date
-        self.pinned = pinned
-        self.noforwards = noforwards
         self.post_author = post_author
         self.grouped_id = grouped_id
         self.reactions = reactions
         self.restriction_reason = restriction_reason
         self.ttl_period = ttl_period
+        self.quick_reply_shortcut_id = quick_reply_shortcut_id
+        self.effect = effect
+        self.factcheck = factcheck
+        # Copied from MessageService.__init__ body
         self.action = action
 
         # Convenient storage for custom functions
@@ -271,6 +253,8 @@ class Message(ChatGetter, SenderGetter, TLObject):
         SenderGetter.__init__(self, sender_id)
 
         self._forward = None
+        self._reply_to_chat = None
+        self._reply_to_sender = None
 
     def _finish_init(self, client, entities, input_chat):
         """
@@ -323,6 +307,14 @@ class Message(ChatGetter, SenderGetter, TLObject):
         if self.replies and self.replies.channel_id:
             self._linked_chat = entities.get(utils.get_peer_id(
                     types.PeerChannel(self.replies.channel_id)))
+        
+        if isinstance(self.reply_to, types.MessageReplyHeader):
+            if self.reply_to.reply_to_peer_id:
+                self._reply_to_chat = entities.get(utils.get_peer_id(self.reply_to.reply_to_peer_id))
+            if self.reply_to.reply_from:
+                if self.reply_to.reply_from.from_id:
+                    self._reply_to_sender = entities.get(utils.get_peer_id(self.reply_to.reply_from.from_id))
+
 
 
     # endregion Initialization
@@ -398,6 +390,22 @@ class Message(ChatGetter, SenderGetter, TLObject):
         information if this message is a forwarded message.
         """
         return self._forward
+
+    @property
+    def reply_to_chat(self):
+        """
+        The :tl:`Channel` in which the replied-to message was sent,
+        if this message is a reply in another chat
+        """
+        return self._reply_to_chat
+
+    @property
+    def reply_to_sender(self):
+        """
+        The :tl:`User`, :tl:`Channel`, or whatever other entity that
+        sent the replied-to message, if this message is a reply in another chat.
+        """
+        return self._reply_to_sender
 
     @property
     def buttons(self):
@@ -784,12 +792,26 @@ class Message(ChatGetter, SenderGetter, TLObject):
 
     async def edit(self, *args, **kwargs):
         """
-        Edits the message iff it's outgoing. Shorthand for
+        Edits the message if it's outgoing. Shorthand for
         `telethon.client.messages.MessageMethods.edit_message`
         with both ``entity`` and ``message`` already set.
 
-        Returns `None` if the message was incoming,
-        or the edited `Message` otherwise.
+        Returns
+            The edited `Message <telethon.tl.custom.message.Message>`,
+            unless `entity` was a :tl:`InputBotInlineMessageID` or :tl:`InputBotInlineMessageID64` in which
+            case this method returns a boolean.
+
+        Raises
+            ``MessageAuthorRequiredError`` if you're not the author of the
+            message but tried editing it anyway.
+
+            ``MessageNotModifiedError`` if the contents of the message were
+            not modified at all.
+
+            ``MessageIdInvalidError`` if the ID of the message is invalid
+            (the ID itself may be correct, but the message with that ID
+            cannot be edited). For example, when trying to edit messages
+            with a reply markup (or clear markup) this error will be raised.
 
         .. note::
 
@@ -803,9 +825,6 @@ class Message(ChatGetter, SenderGetter, TLObject):
             This is generally the most desired and convenient behaviour,
             and will work for link previews and message buttons.
         """
-        if self.fwd_from or not self.out or not self._client:
-            return None  # We assume self.out was patched for our chat
-
         if 'link_preview' not in kwargs:
             kwargs['link_preview'] = bool(self.web_preview)
 

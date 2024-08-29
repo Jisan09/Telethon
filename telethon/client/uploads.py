@@ -47,7 +47,17 @@ def _resize_photo_if_needed(
     if isinstance(file, bytes):
         file = io.BytesIO(file)
 
-    before = file.tell() if isinstance(file, io.IOBase) else None
+    if isinstance(file, io.IOBase):
+        # Pillow seeks to 0 unconditionally later anyway
+        old_pos = file.tell()
+        file.seek(0, io.SEEK_END)
+        before = file.tell()
+    elif isinstance(file, str) and os.path.exists(file):
+        # Check if file exists as a path and if so, get its size on disk
+        before = os.path.getsize(file)
+    else:
+        # Would be weird...
+        before = None
 
     try:
         # Don't use a `with` block for `image`, or `file` would be closed.
@@ -58,10 +68,11 @@ def _resize_photo_if_needed(
         except KeyError:
             kwargs = {}
 
-        if image.width <= width and image.height <= height:
+        # Check if image is within acceptable bounds, if so, check if the image is at or below 10 MB, or assume it isn't if size is None or 0
+        if image.width <= width and image.height <= height and (before <= 10000000 if before else False):
             return file
 
-        image.thumbnail((width, height), PIL.Image.ANTIALIAS)
+        image.thumbnail((width, height), PIL.Image.LANCZOS)
 
         alpha_index = image.mode.find('A')
         if alpha_index == -1:
@@ -79,13 +90,14 @@ def _resize_photo_if_needed(
         buffer = io.BytesIO()
         result.save(buffer, 'JPEG', progressive=True, **kwargs)
         buffer.seek(0)
+        buffer.name = 'a.jpg'
         return buffer
-
     except IOError:
         return file
     finally:
-        if before is not None:
-            file.seek(before, io.SEEK_SET)
+        # The original position might matter
+        if isinstance(file, io.IOBase):
+            file.seek(old_pos)
 
 
 class UploadMethods:
@@ -408,8 +420,9 @@ class UploadMethods:
             raise TypeError('Cannot use {!r} as file'.format(file))
 
         markup = self.build_reply_markup(buttons)
+        reply_to = None if reply_to is None else types.InputReplyToMessage(reply_to)
         request = functions.messages.SendMediaRequest(
-            entity, media, reply_to_msg_id=reply_to, message=caption,
+            entity, media, reply_to=reply_to, message=caption,
             entities=msg_entities, reply_markup=markup, silent=silent,
             schedule_date=schedule, clear_draft=clear_draft,
             background=background
@@ -484,7 +497,7 @@ class UploadMethods:
 
         # Now we can construct the multi-media request
         request = functions.messages.SendMultiMediaRequest(
-            entity, reply_to_msg_id=reply_to, multi_media=media,
+            entity, reply_to=None if reply_to is None else types.InputReplyToMessage(reply_to), multi_media=media,
             silent=silent, schedule_date=schedule, clear_draft=clear_draft,
             background=background
         )

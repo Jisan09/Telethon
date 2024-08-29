@@ -45,22 +45,34 @@ POSSIBLE_GAP_TIMEOUT = 0.5
 # Documentation recommends 15 minutes without updates (https://core.telegram.org/api/updates).
 NO_UPDATES_TIMEOUT = 15 * 60
 
+# object() but with a tag to make it easier to debug
+class Sentinel:
+    __slots__ = ('tag',)
+
+    def __init__(self, tag=None):
+        self.tag = tag or '_'
+
+    def __repr__(self):
+        return self.tag
+
 # Entry "enum".
 # Account-wide `pts` includes private conversations (one-to-one) and small group chats.
-ENTRY_ACCOUNT = object()
+ENTRY_ACCOUNT = Sentinel('ACCOUNT')
 # Account-wide `qts` includes only "secret" one-to-one chats.
-ENTRY_SECRET = object()
+ENTRY_SECRET = Sentinel('SECRET')
 # Integers will be Channel-specific `pts`, and includes "megagroup", "broadcast" and "supergroup" channels.
 
 # Python's logging doesn't define a TRACE level. Pick halfway between DEBUG and NOTSET.
 # We don't define a name for this as libraries shouldn't do that though.
 LOG_LEVEL_TRACE = (logging.DEBUG - logging.NOTSET) // 2
 
-_sentinel = object()
+_sentinel = Sentinel()
 
 def next_updates_deadline():
     return get_running_loop().time() + NO_UPDATES_TIMEOUT
 
+def epoch():
+    return datetime.datetime(*time.gmtime(0)[:6]).replace(tzinfo=datetime.timezone.utc)
 
 class GapError(ValueError):
     def __repr__(self):
@@ -99,19 +111,12 @@ class PtsInfo:
 
         qts = getattr(update, 'qts', None)
         if qts:
-            pts_count = 1 if isinstance(update, tl.UpdateNewEncryptedMessage) else 0
-            return cls(pts=qts, pts_count=pts_count, entry=ENTRY_SECRET)
+            return cls(pts=qts, pts_count=1, entry=ENTRY_SECRET)
 
         return None
 
     def __repr__(self):
-        if self.entry is ENTRY_ACCOUNT:
-            entry = 'ENTRY_ACCOUNT'
-        elif self.entry is ENTRY_SECRET:
-            entry = 'ENTRY_SECRET'
-        else:
-            entry = self.entry
-        return f'PtsInfo(pts={self.pts}, pts_count={self.pts_count}, entry={entry})'
+        return f'PtsInfo(pts={self.pts}, pts_count={self.pts_count}, entry={self.entry})'
 
 
 # The state of a particular entry in the message box.
@@ -160,7 +165,7 @@ class PossibleGap:
 #
 # See https://core.telegram.org/api/updates#message-related-event-sequences.
 class MessageBox:
-    __slots__ = ('_log', 'map', 'date', 'seq', 'next_deadline', 'possible_gaps', 'getting_diff_for', 'reset_deadlines_for')
+    __slots__ = ('_log', 'map', 'date', 'seq', 'next_deadline', 'possible_gaps', 'getting_diff_for')
 
     def __init__(
         self,
@@ -169,7 +174,7 @@ class MessageBox:
         map: dict = _sentinel,  # entry -> state
 
         # Additional fields beyond PTS needed by `ENTRY_ACCOUNT`.
-        date: datetime.datetime = datetime.datetime(*time.gmtime(0)[:6]).replace(tzinfo=datetime.timezone.utc),
+        date: datetime.datetime = epoch() + datetime.timedelta(seconds=1),
         seq: int = NO_SEQ,
 
         # Holds the entry with the closest deadline (optimization to avoid recalculating the minimum deadline).
@@ -186,10 +191,6 @@ class MessageBox:
 
         # For which entries are we currently getting difference.
         getting_diff_for: set = _sentinel,  # entry
-
-        # Temporarily stores which entries should have their update deadline reset.
-        # Stored in the message box in order to reuse the allocation.
-        reset_deadlines_for: set = _sentinel  # entry
     ):
         self._log = log
         self.map = {} if map is _sentinel else map
@@ -198,20 +199,17 @@ class MessageBox:
         self.next_deadline = next_deadline
         self.possible_gaps = {} if possible_gaps is _sentinel else possible_gaps
         self.getting_diff_for = set() if getting_diff_for is _sentinel else getting_diff_for
-        self.reset_deadlines_for = set() if reset_deadlines_for is _sentinel else reset_deadlines_for
 
         if __debug__:
-            # Need this to tell them apart when printing the repr of the state map.
-            # Could be done once at the global level, but that makes configuring logging
-            # more annoying because it would need to be done before importing telethon.
-            self._trace('ENTRY_ACCOUNT = %r; ENTRY_SECRET = %r', ENTRY_ACCOUNT, ENTRY_SECRET)
-            self._trace('Created new MessageBox with map = %r, date = %r, seq = %r', self.map, self.date, self.seq)
+            self._trace('MessageBox initialized')
 
     def _trace(self, msg, *args, **kwargs):
         # Calls to trace can't really be removed beforehand without some dark magic.
         # So every call to trace is prefixed with `if __debug__`` instead, to remove
         # it when using `python -O`. Probably unnecessary, but it's nice to avoid
         # paying the cost for something that is not used.
+        self._log.log(LOG_LEVEL_TRACE, 'Current MessageBox state: seq = %r, date = %s, map = %r',
+                      self.seq, self.date.isoformat(), self.map)
         self._log.log(LOG_LEVEL_TRACE, msg, *args, **kwargs)
 
     # region Creation, querying, and setting base state.
@@ -280,8 +278,8 @@ class MessageBox:
         # timeout for updates several times (it also makes sense to get difference if now is the deadline).
         if now >= deadline:
             # Check all expired entries and add them to the list that needs getting difference.
-            self.getting_diff_for.update(entry for entry, gap in self.possible_gaps.items() if now > gap.deadline)
-            self.getting_diff_for.update(entry for entry, state in self.map.items() if now > state.deadline)
+            self.getting_diff_for.update(entry for entry, gap in self.possible_gaps.items() if now >= gap.deadline)
+            self.getting_diff_for.update(entry for entry, state in self.map.items() if now >= state.deadline)
 
             if __debug__:
                 self._trace('Deadlines met, now getting diff for %r', self.getting_diff_for)
@@ -293,38 +291,27 @@ class MessageBox:
 
         return deadline
 
-    # Reset the deadline for the periods without updates for a given entry.
+    # Reset the deadline for the periods without updates for the given entries.
     #
     # It also updates the next deadline time to reflect the new closest deadline.
-    def reset_deadline(self, entry, deadline):
-        if entry not in self.map:
-            raise RuntimeError('Called reset_deadline on an entry for which we do not have state')
-        self.map[entry].deadline = deadline
+    def reset_deadlines(self, entries, deadline):
+        for entry in entries:
+            if entry not in self.map:
+                raise RuntimeError('Called reset_deadline on an entry for which we do not have state')
+            self.map[entry].deadline = deadline
 
-        if self.next_deadline == entry:
+        if self.next_deadline in entries:
             # If the updated deadline was the closest one, recalculate the new minimum.
             self.next_deadline = min(self.map.items(), key=lambda entry_state: entry_state[1].deadline)[0]
         elif self.next_deadline in self.map and deadline < self.map[self.next_deadline].deadline:
             # If the updated deadline is smaller than the next deadline, change the next deadline to be the new one.
+            # Any entry will do, so the one from the last iteration is fine.
             self.next_deadline = entry
         # else an unrelated deadline was updated, so the closest one remains unchanged.
 
     # Convenience to reset a channel's deadline, with optional timeout.
     def reset_channel_deadline(self, channel_id, timeout):
-        self.reset_deadline(channel_id, get_running_loop().time() + (timeout or NO_UPDATES_TIMEOUT))
-
-    # Reset all the deadlines in `reset_deadlines_for` and then empty the set.
-    def apply_deadlines_reset(self):
-        next_deadline = next_updates_deadline()
-
-        reset_deadlines_for = self.reset_deadlines_for
-        self.reset_deadlines_for = set()  # "move" the set to avoid self.reset_deadline() from touching it during iter
-
-        for entry in reset_deadlines_for:
-            self.reset_deadline(entry, next_deadline)
-
-        reset_deadlines_for.clear()  # reuse allocation, the other empty set was a temporary dummy value
-        self.reset_deadlines_for = reset_deadlines_for
+        self.reset_deadlines({channel_id}, get_running_loop().time() + (timeout or NO_UPDATES_TIMEOUT))
 
     # Sets the update state.
     #
@@ -370,15 +357,18 @@ class MessageBox:
     # Fails if the entry does not have a previously-known state that can be used to get its difference.
     #
     # Clears any previous gaps.
-    def try_begin_get_diff(self, entry):
+    def try_begin_get_diff(self, entry, reason):
         if entry not in self.map:
             # Won't actually be able to get difference for this entry if we don't have a pts to start off from.
             if entry in self.possible_gaps:
                 raise RuntimeError('Should not have a possible_gap for an entry not in the state map')
 
-            # TODO it would be useful to log when this happens
+            if __debug__:
+                self._trace('Should get difference for %r because %s but cannot due to missing hash', entry, reason)
             return
 
+        if __debug__:
+            self._trace('Marking %r as needing difference because %s', entry, reason)
         self.getting_diff_for.add(entry)
         self.possible_gaps.pop(entry, None)
 
@@ -391,7 +381,7 @@ class MessageBox:
         except KeyError:
             raise RuntimeError('Called end_get_diff on an entry which was not getting diff for')
 
-        self.reset_deadline(entry, next_updates_deadline())
+        self.reset_deadlines({entry}, next_updates_deadline())
         assert entry not in self.possible_gaps, "gaps shouldn't be created while getting difference"
 
     # endregion Creation, querying, and setting base state.
@@ -416,14 +406,6 @@ class MessageBox:
         chat_hashes,
         result,  # out list of updates; returns list of user, chat, or raise if gap
     ):
-        if __debug__:
-            self._trace('Processing updates %s', updates)
-
-        date = getattr(updates, 'date', None)
-        if date is None:
-            # updatesTooLong is the only one with no date (we treat it as a gap)
-            self.try_begin_get_diff(ENTRY_ACCOUNT)
-            raise GapError
 
         # v1 has never sent updates produced by the client itself to the handlers.
         # However proper update handling requires those to be processed.
@@ -432,10 +414,24 @@ class MessageBox:
         real_result = result
         result = []
 
-        seq = getattr(updates, 'seq', None) or NO_SEQ
-        seq_start = getattr(updates, 'seq_start', None) or seq
+        date = getattr(updates, 'date', None)
+        seq = getattr(updates, 'seq', None)
+        seq_start = getattr(updates, 'seq_start', None)
         users = getattr(updates, 'users', None) or []
         chats = getattr(updates, 'chats', None) or []
+
+        if __debug__:
+            self._trace('Processing updates with seq = %r, seq_start = %r, date = %s: %s',
+                        seq, seq_start, date.isoformat() if date else None, updates)
+
+        if date is None:
+            # updatesTooLong is the only one with no date (we treat it as a gap)
+            self.try_begin_get_diff(ENTRY_ACCOUNT, 'received updatesTooLong')
+            raise GapError
+        if seq is None:
+            seq = NO_SEQ
+        if seq_start is None:
+            seq_start = seq
 
         # updateShort is the only update which cannot be dispatched directly but doesn't have 'updates' field
         updates = getattr(updates, 'updates', None) or [updates.update if isinstance(updates, tl.UpdateShort) else updates]
@@ -448,38 +444,50 @@ class MessageBox:
         if seq_start != NO_SEQ:
             if self.seq + 1 > seq_start:
                 # Skipping updates that were already handled
+                if __debug__:
+                    self._trace('Skipping updates as they should have already been handled')
                 return (users, chats)
             elif self.seq + 1 < seq_start:
                 # Gap detected
-                self.try_begin_get_diff(ENTRY_ACCOUNT)
+                self.try_begin_get_diff(ENTRY_ACCOUNT, 'detected gap')
                 raise GapError
             # else apply
-
-            self.date = date
-            if seq != NO_SEQ:
-                self.seq = seq
 
         def _sort_gaps(update):
             pts = PtsInfo.from_update(update)
             return pts.pts - pts.pts_count if pts else 0
 
-        # Telegram can send updates out of order (e.g. ReadChannelInbox first
-        # and then NewChannelMessage, both with the same pts, but the count is
-        # 0 and 1 respectively).
-        #
-        # We can't know beforehand if this would cause issues (i.e. if any of
-        # the updates is the first one we get to know about a specific channel)
-        # (other than doing a pre-scan to check if any has info about an entry
-        # we lack), so instead we sort preemptively. As a bonus there's less
-        # likelyhood of "possible gaps" by doing this.
-        # TODO give this more thought, perhaps possible gaps can't happen at all
-        #      (not ones which would be resolved by sorting anyway)
-        result.extend(filter(None, (
-            self.apply_pts_info(u, reset_deadline=True) for u in sorted(updates, key=_sort_gaps))))
+        reset_deadlines = set()  # temporary buffer
+        any_pts_applied = [False]  # using a list to pass "by reference"
 
-        self.apply_deadlines_reset()
+        result.extend(filter(None, (
+            self.apply_pts_info(u, reset_deadlines=reset_deadlines, any_pts_applied=any_pts_applied)
+            # Telegram can send updates out of order (e.g. ReadChannelInbox first
+            # and then NewChannelMessage, both with the same pts, but the count is
+            # 0 and 1 respectively), so we sort them first.
+            for u in sorted(updates, key=_sort_gaps))))
+
+        # > If the updates were applied, local *Updates* state must be updated
+        # > with `seq` (unless it's 0) and `date` from the constructor.
+        #
+        # By "were applied", we assume it means "some other pts was applied".
+        # Updates which can be applied in any order, such as `UpdateChat`,
+        # should not cause `seq` to be updated (or upcoming updates such as
+        # `UpdateChatParticipant` could be missed).
+        if any_pts_applied[0]:
+            if __debug__:
+                self._trace('Updating seq as local pts was updated too')
+            if date != epoch():
+                self.date = date
+            if seq != NO_SEQ:
+                self.seq = seq
+
+        self.reset_deadlines(reset_deadlines, next_updates_deadline())
 
         if self.possible_gaps:
+            if __debug__:
+                self._trace('Trying to re-apply %r possible gaps', len(self.possible_gaps))
+
             # For each update in possible gaps, see if the gap has been resolved already.
             for key in list(self.possible_gaps.keys()):
                 self.possible_gaps[key].updates.sort(key=_sort_gaps)
@@ -489,9 +497,11 @@ class MessageBox:
 
                     # If this fails to apply, it will get re-inserted at the end.
                     # All should fail, so the order will be preserved (it would've cycled once).
-                    update = self.apply_pts_info(update, reset_deadline=False)
+                    update = self.apply_pts_info(update, reset_deadlines=None)
                     if update:
                         result.append(update)
+                        if __debug__:
+                            self._trace('Resolved gap with %r: %s', PtsInfo.from_update(update), update)
 
             # Clear now-empty gaps.
             self.possible_gaps = {entry: gap for entry, gap in self.possible_gaps.items() if gap.updates}
@@ -509,16 +519,19 @@ class MessageBox:
         self,
         update,
         *,
-        reset_deadline,
+        reset_deadlines,
+        any_pts_applied=[True],  # mutable default is fine as it's write-only
     ):
         # This update means we need to call getChannelDifference to get the updates from the channel
         if isinstance(update, tl.UpdateChannelTooLong):
-            self.try_begin_get_diff(update.channel_id)
+            self.try_begin_get_diff(update.channel_id, 'received updateChannelTooLong')
             return None
 
         pts = PtsInfo.from_update(update)
         if not pts:
             # No pts means that the update can be applied in any order.
+            if __debug__:
+                self._trace('No pts in update, so it can be applied in any order: %s', update)
             return update
 
         # As soon as we receive an update of any form related to messages (has `PtsInfo`),
@@ -527,22 +540,28 @@ class MessageBox:
         # Build the `HashSet` to avoid calling `reset_deadline` more than once for the same entry.
         #
         # By the time this method returns, self.map will have an entry for which we can reset its deadline.
-        if reset_deadline:
-            self.reset_deadlines_for.add(pts.entry)
+        if reset_deadlines:
+            reset_deadlines.add(pts.entry)
 
         if pts.entry in self.getting_diff_for:
             # Note: early returning here also prevents gap from being inserted (which they should
             # not be while getting difference).
+            if __debug__:
+                self._trace('Skipping update with %r as its difference is being fetched', pts)
             return None
 
         if pts.entry in self.map:
             local_pts = self.map[pts.entry].pts
             if local_pts + pts.pts_count > pts.pts:
                 # Ignore
+                if __debug__:
+                    self._trace('Skipping update since local pts %r > %r: %s', local_pts, pts, update)
                 return None
             elif local_pts + pts.pts_count < pts.pts:
                 # Possible gap
                 # TODO store chats too?
+                if __debug__:
+                    self._trace('Possible gap since local pts %r < %r: %s', local_pts, pts, update)
                 if pts.entry not in self.possible_gaps:
                     self.possible_gaps[pts.entry] = PossibleGap(
                         deadline=get_running_loop().time() + POSSIBLE_GAP_TIMEOUT,
@@ -553,7 +572,9 @@ class MessageBox:
                 return None
             else:
                 # Apply
-                pass
+                any_pts_applied[0] = True
+                if __debug__:
+                    self._trace('Applying update pts since local pts %r = %r: %s', local_pts, pts, update)
 
         # In a channel, we may immediately receive:
         # * ReadChannelInbox (pts = X, pts_count = 0)
@@ -668,7 +689,7 @@ class MessageBox:
             updates=diff.other_updates,
             users=diff.users,
             chats=diff.chats,
-            date=1,  # anything not-None
+            date=epoch(),
             seq=NO_SEQ,  # this way date is not used
         ), chat_hashes, updates)
 
@@ -777,7 +798,7 @@ class MessageBox:
                 updates=diff.other_updates,
                 users=diff.users,
                 chats=diff.chats,
-                date=1,  # anything not-None
+                date=epoch(),
                 seq=NO_SEQ,  # this way date is not used
             ), chat_hashes, updates)
 

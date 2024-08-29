@@ -30,6 +30,10 @@ class UserMethods:
         return await self._call(self._sender, request, ordered=ordered)
 
     async def _call(self: 'TelegramClient', sender, request, ordered=False, flood_sleep_threshold=None):
+        if self._loop is not None and self._loop != helpers.get_running_loop():
+            raise RuntimeError('The asyncio event loop must not change after connection (see the FAQ for details)')
+        # if the loop is None it will fail with a connection error later on
+
         if flood_sleep_threshold is None:
             flood_sleep_threshold = self.flood_sleep_threshold
         requests = (request if utils.is_list_like(request) else (request,))
@@ -85,6 +89,7 @@ class UserMethods:
                     return result
             except (errors.ServerError, errors.RpcCallFailError,
                     errors.RpcMcgetFailError, errors.InterdcCallErrorError,
+                    errors.TimedOutError,
                     errors.InterdcCallRichErrorError) as e:
                 last_error = e
                 self._log[__name__].warning(
@@ -92,7 +97,8 @@ class UserMethods:
                     e.__class__.__name__, e)
 
                 await asyncio.sleep(2)
-            except (errors.FloodWaitError, errors.SlowModeWaitError, errors.FloodTestPhoneWaitError) as e:
+            except (errors.FloodWaitError, errors.FloodPremiumWaitError,
+                    errors.SlowModeWaitError, errors.FloodTestPhoneWaitError) as e:
                 last_error = e
                 if utils.is_list_like(request):
                     request = request[request_index]
@@ -217,7 +223,7 @@ class UserMethods:
 
     async def get_entity(
             self: 'TelegramClient',
-            entity: 'hints.EntitiesLike') -> 'hints.Entity':
+            entity: 'hints.EntitiesLike') -> typing.Union['hints.Entity', typing.List['hints.Entity']]:
         """
         Turns the given entity into a valid Telegram :tl:`User`, :tl:`Chat`
         or :tl:`Channel`. You can also pass a list or iterable of entities,
@@ -316,7 +322,9 @@ class UserMethods:
 
         # Merge users, chats and channels into a single dictionary
         id_entity = {
-            utils.get_peer_id(x): x
+            # `get_input_entity` might've guessed the type from a non-marked ID,
+            # so the only way to match that with the input is by not using marks here.
+            utils.get_peer_id(x, add_mark=False): x
             for x in itertools.chain(users, chats, channels)
         }
 
@@ -329,7 +337,7 @@ class UserMethods:
             if isinstance(x, str):
                 result.append(await self._get_entity_from_string(x))
             elif not isinstance(x, types.InputPeerSelf):
-                result.append(id_entity[utils.get_peer_id(x)])
+                result.append(id_entity[utils.get_peer_id(x, add_mark=False)])
             else:
                 result.append(next(
                     u for u in id_entity.values()

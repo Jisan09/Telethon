@@ -553,7 +553,9 @@ class MessageMethods:
             scheduled=scheduled
         )
 
-    async def get_messages(self: 'TelegramClient', *args, **kwargs) -> 'hints.TotalList':
+    async def get_messages(
+            self: 'TelegramClient', *args, **kwargs
+    ) -> typing.Union['hints.TotalList', typing.Optional['types.Message']]:
         """
         Same as `iter_messages()`, but returns a
         `TotalList <telethon.helpers.TotalList>` instead.
@@ -617,7 +619,7 @@ class MessageMethods:
             peer=entity,
             msg_id=utils.get_message_id(message)
         ))
-        m = r.messages[0]
+        m = min(r.messages, key=lambda msg: msg.id)
         chat = next(c for c in r.chats if c.id == m.peer_id.channel_id)
         return utils.get_input_peer(chat), m.id
 
@@ -838,6 +840,8 @@ class MessageMethods:
         entity = await self.get_input_entity(entity)
         if comment_to is not None:
             entity, reply_to = await self._get_comment_data(entity, comment_to)
+        else:
+            reply_to = utils.get_message_id(reply_to)
 
         if isinstance(message, types.Message):
             if buttons is None:
@@ -868,7 +872,7 @@ class MessageMethods:
                 message=message.message or '',
                 silent=silent,
                 background=background,
-                reply_to_msg_id=utils.get_message_id(reply_to),
+                reply_to=None if reply_to is None else types.InputReplyToMessage(reply_to),
                 reply_markup=markup,
                 entities=message.entities,
                 clear_draft=clear_draft,
@@ -890,7 +894,7 @@ class MessageMethods:
                 message=message,
                 entities=formatting_entities,
                 no_webpage=not link_preview,
-                reply_to_msg_id=utils.get_message_id(reply_to),
+                reply_to=None if reply_to is None else types.InputReplyToMessage(reply_to),
                 clear_draft=clear_draft,
                 silent=silent,
                 background=background,
@@ -910,7 +914,7 @@ class MessageMethods:
                 entities=result.entities,
                 reply_markup=request.reply_markup,
                 ttl_period=result.ttl_period,
-                reply_to=types.MessageReplyHeader(request.reply_to_msg_id)
+                reply_to=request.reply_to
             )
             message._finish_init(self, {}, entity)
             return message
@@ -927,7 +931,8 @@ class MessageMethods:
             with_my_score: bool = None,
             silent: bool = None,
             as_album: bool = None,
-            schedule: 'hints.DateLike' = None
+            schedule: 'hints.DateLike' = None,
+            drop_author: bool = None,
     ) -> 'typing.Sequence[types.Message]':
         """
         Forwards the given messages to the specified entity.
@@ -1039,7 +1044,8 @@ class MessageMethods:
                 silent=silent,
                 background=background,
                 with_my_score=with_my_score,
-                schedule_date=schedule
+                schedule_date=schedule,
+                drop_author=drop_author
             )
             result = await self(req)
             sent.extend(self._get_response_message(req, result, entity))
