@@ -1,6 +1,6 @@
 import datetime
 
-from .. import TLObject
+from .. import TLObject, types
 from ..functions.messages import SaveDraftRequest
 from ..types import DraftMessage
 from ...errors import RPCError
@@ -37,7 +37,7 @@ class Draft:
         self._raw_text = draft.message
         self.date = draft.date
         self.link_preview = not draft.no_webpage
-        self.reply_to_msg_id = draft.reply_to_msg_id
+        self.reply_to_msg_id = draft.reply_to.reply_to_msg_id if isinstance(draft.reply_to, types.InputReplyToMessage) else None
 
     @property
     def entity(self):
@@ -139,7 +139,7 @@ class Draft:
             peer=self._peer,
             message=raw_text,
             no_webpage=not link_preview,
-            reply_to_msg_id=reply_to,
+            reply_to=None if reply_to is None else types.InputReplyToMessage(reply_to),
             entities=entities
         ))
 

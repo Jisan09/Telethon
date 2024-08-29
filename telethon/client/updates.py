@@ -9,6 +9,7 @@ import typing
 import logging
 import warnings
 from collections import deque
+import sqlite3
 
 from .. import events, utils, errors
 from ..events.common import EventBuilder, EventCommon
@@ -305,7 +306,12 @@ class UpdateMethods:
                     self._log[__name__].debug('Getting difference for account updates')
                     try:
                         diff = await self(get_diff)
-                    except (errors.ServerError, errors.TimeoutError, ValueError) as e:
+                    except (
+                        errors.ServerError,
+                        errors.TimedOutError,
+                        errors.FloodWaitError,
+                        ValueError
+                    ) as e:
                         # Telegram is having issues
                         self._log[__name__].info('Cannot get difference since Telegram is having issues: %s', type(e).__name__)
                         self._message_box.end_difference()
@@ -319,7 +325,7 @@ class UpdateMethods:
                             await self.disconnect()
                             break
                         continue
-                    except errors.TypeNotFoundError as e:
+                    except (errors.TypeNotFoundError, sqlite3.OperationalError) as e:
                         # User is likely doing weird things with their account or session and Telegram gets confused as to what layer they use
                         self._log[__name__].warning('Cannot get difference since the account is likely misusing the session: %s', e)
                         self._message_box.end_difference()
@@ -361,9 +367,9 @@ class UpdateMethods:
                             await self.disconnect()
                             break
                         continue
-                    except errors.TypeNotFoundError as e:
+                    except (errors.TypeNotFoundError, sqlite3.OperationalError) as e:
                         self._log[__name__].warning(
-                            'Cannot get difference since the account is likely misusing the session: %s',
+                            'Cannot get difference for channel %s since the account is likely misusing the session: %s',
                             get_diff.channel.channel_id, e
                         )
                         self._message_box.end_channel_difference(
@@ -378,7 +384,8 @@ class UpdateMethods:
                         errors.PersistentTimestampOutdatedError,
                         errors.PersistentTimestampInvalidError,
                         errors.ServerError,
-                        errors.TimeoutError,
+                        errors.TimedOutError,
+                        errors.FloodWaitError,
                         ValueError
                     ) as e:
                         # According to Telegram's docs:

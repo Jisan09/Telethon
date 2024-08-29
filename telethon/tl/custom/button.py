@@ -55,7 +55,8 @@ class Button:
             types.KeyboardButtonSwitchInline,
             types.KeyboardButtonUrl,
             types.InputKeyboardButtonUrlAuth,
-            types.InputKeyboardButtonUserProfile
+            types.InputKeyboardButtonUserProfile,
+            types.KeyboardButtonWebView,
         ))
 
     @staticmethod

@@ -7,6 +7,7 @@ import platform
 import time
 import typing
 import datetime
+import pathlib
 
 from .. import version, helpers, __name__ as __base_name__
 from ..crypto import rsa
@@ -235,7 +236,7 @@ class TelegramBaseClient(abc.ABC):
 
     def __init__(
             self: 'TelegramClient',
-            session: 'typing.Union[str, Session]',
+            session: 'typing.Union[str, pathlib.Path, Session]',
             api_id: int,
             api_hash: str,
             *,
@@ -284,9 +285,9 @@ class TelegramBaseClient(abc.ABC):
         self._log = _Loggers()
 
         # Determine what session object we have
-        if isinstance(session, str) or session is None:
+        if isinstance(session, (str, pathlib.Path)):
             try:
-                session = SQLiteSession(session)
+                session = SQLiteSession(str(session))
             except ImportError:
                 import warnings
                 warnings.warn(
@@ -297,6 +298,8 @@ class TelegramBaseClient(abc.ABC):
                     'you use another session storage'
                 )
                 session = MemorySession()
+        elif session is None:
+            session = MemorySession()
         elif not isinstance(session, Session):
             raise TypeError(
                 'The given session must be a str or a Session instance.'
@@ -398,6 +401,7 @@ class TelegramBaseClient(abc.ABC):
         # Cache ``{dc_id: (_ExportState, MTProtoSender)}`` for all borrowed senders
         self._borrowed_senders = {}
         self._borrow_sender_lock = asyncio.Lock()
+        self._exported_sessions = {}
 
         self._loop = None  # only used as a sanity check
         self._updates_error = None
@@ -782,7 +786,8 @@ class TelegramBaseClient(abc.ABC):
         if cdn and not self._cdn_config:
             cls._cdn_config = await self(functions.help.GetCdnConfigRequest())
             for pk in cls._cdn_config.public_keys:
-                rsa.add_key(pk.public_key)
+                if pk.dc_id == dc_id:
+                    rsa.add_key(pk.public_key, old=False)
 
         try:
             return next(
@@ -795,10 +800,13 @@ class TelegramBaseClient(abc.ABC):
                 'Failed to get DC %s (cdn = %s) with use_ipv6 = %s; retrying ignoring IPv6 check',
                 dc_id, cdn, self._use_ipv6
             )
-            return next(
-                dc for dc in cls._config.dc_options
-                if dc.id == dc_id and bool(dc.cdn) == cdn
-            )
+            try:
+                return next(
+                    dc for dc in cls._config.dc_options
+                    if dc.id == dc_id and bool(dc.cdn) == cdn
+                )
+            except StopIteration:
+                raise ValueError(f'Failed to get DC {dc_id} (cdn = {cdn})')
 
     async def _create_exported_sender(self: 'TelegramClient', dc_id):
         """
@@ -886,8 +894,6 @@ class TelegramBaseClient(abc.ABC):
 
     async def _get_cdn_client(self: 'TelegramClient', cdn_redirect):
         """Similar to ._borrow_exported_client, but for CDNs"""
-        # TODO Implement
-        raise NotImplementedError
         session = self._exported_sessions.get(cdn_redirect.dc_id)
         if not session:
             dc = await self._get_dc(cdn_redirect.dc_id, cdn=True)
@@ -896,18 +902,22 @@ class TelegramBaseClient(abc.ABC):
             self._exported_sessions[cdn_redirect.dc_id] = session
 
         self._log[__name__].info('Creating new CDN client')
-        client = TelegramBaseClient(
+        client = self.__class__(
             session, self.api_id, self.api_hash,
-            proxy=self._sender.connection.conn.proxy,
-            timeout=self._sender.connection.get_timeout()
+            proxy=self._proxy,
+            timeout=self._timeout,
+            loop=self.loop
         )
 
-        # This will make use of the new RSA keys for this specific CDN.
-        #
-        # We won't be calling GetConfigRequest because it's only called
-        # when needed by ._get_dc, and also it's static so it's likely
-        # set already. Avoid invoking non-CDN methods by not syncing updates.
-        client.connect(_sync_updates=False)
+        session.auth_key = self._sender.auth_key
+        await client._sender.connect(self._connection(
+            session.server_address,
+            session.port,
+            session.dc_id,
+            loggers=self._log,
+            proxy=self._proxy,
+            local_addr=self._local_addr
+        ))
         return client
 
     # endregion

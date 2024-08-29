@@ -89,6 +89,7 @@ class UserMethods:
                     return result
             except (errors.ServerError, errors.RpcCallFailError,
                     errors.RpcMcgetFailError, errors.InterdcCallErrorError,
+                    errors.TimedOutError,
                     errors.InterdcCallRichErrorError) as e:
                 last_error = e
                 self._log[__name__].warning(
@@ -96,7 +97,8 @@ class UserMethods:
                     e.__class__.__name__, e)
 
                 await asyncio.sleep(2)
-            except (errors.FloodWaitError, errors.SlowModeWaitError, errors.FloodTestPhoneWaitError) as e:
+            except (errors.FloodWaitError, errors.FloodPremiumWaitError,
+                    errors.SlowModeWaitError, errors.FloodTestPhoneWaitError) as e:
                 last_error = e
                 if utils.is_list_like(request):
                     request = request[request_index]
@@ -221,7 +223,7 @@ class UserMethods:
 
     async def get_entity(
             self: 'TelegramClient',
-            entity: 'hints.EntitiesLike') -> 'hints.Entity':
+            entity: 'hints.EntitiesLike') -> typing.Union['hints.Entity', typing.List['hints.Entity']]:
         """
         Turns the given entity into a valid Telegram :tl:`User`, :tl:`Chat`
         or :tl:`Channel`. You can also pass a list or iterable of entities,

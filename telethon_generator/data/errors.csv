@@ -67,6 +67,7 @@ CHANNELS_ADMIN_LOCATED_TOO_MUCH,400,The user has reached the limit of public geo
 CHANNELS_ADMIN_PUBLIC_TOO_MUCH,400,"You're admin of too many public channels, make some channels private to change the username of this channel"
 CHANNELS_TOO_MUCH,400,You have joined too many channels/supergroups
 CHANNEL_BANNED,400,The channel is banned
+CHANNEL_FORUM_MISSING,400,
 CHANNEL_ID_INVALID,400,The specified supergroup ID is invalid
 CHANNEL_INVALID,400,"Invalid channel object. Make sure to pass the right types, for instance making sure that the request is designed for channels or otherwise look for a different one more suited"
 CHANNEL_PARICIPANT_MISSING,400,The current user is not in the channel
@@ -81,6 +82,7 @@ CHAT_ADMIN_REQUIRED,400 403,"Chat admin privileges are required to do that in th
 CHAT_DISCUSSION_UNALLOWED,400,
 CHAT_FORBIDDEN,403,You cannot write in this chat
 CHAT_FORWARDS_RESTRICTED,400 406,You can't forward messages from a protected chat
+CHAT_GET_FAILED,500,
 CHAT_GUEST_SEND_FORBIDDEN,403,"You join the discussion group before commenting, see [here](/api/discussion#requiring-users-to-join-the-group) for more info"
 CHAT_ID_EMPTY,400,The provided chat ID is empty
 CHAT_ID_GENERATE_FAILED,500,Failure while generating the chat ID
@@ -177,6 +179,7 @@ FILTER_TITLE_EMPTY,400,The title field of the filter is empty
 FIRSTNAME_INVALID,400,The first name is invalid
 FLOOD_TEST_PHONE_WAIT_X,420,A wait of {seconds} seconds is required in the test servers
 FLOOD_WAIT_X,420,A wait of {seconds} seconds is required
+FLOOD_PREMIUM_WAIT_X,420,A wait of {seconds} seconds is required in non-premium accounts
 FOLDER_ID_EMPTY,400,The folder you tried to delete was already empty
 FOLDER_ID_INVALID,400,The folder you tried to use was not valid
 FRESH_CHANGE_ADMINS_FORBIDDEN,400 406,Recently logged-in users cannot add or change admins
@@ -462,6 +465,7 @@ TTL_MEDIA_INVALID,400,The provided media cannot be used with a TTL
 TTL_PERIOD_INVALID,400,The provided TTL Period is invalid
 TYPES_EMPTY,400,The types field is empty
 TYPE_CONSTRUCTOR_INVALID,400,The type constructor is invalid
+Timedout,-503,Timeout while fetching data
 Timeout,-503,Timeout while fetching data
 UNKNOWN_ERROR,400,
 UNKNOWN_METHOD,500,The method you tried to call cannot be called on non-CDN DCs
